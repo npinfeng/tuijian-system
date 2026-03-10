@@ -1,0 +1,288 @@
+# 推荐系统配置文件
+
+# 数据配置
+data:
+  raw_data_path: "data/raw"
+  processed_data_path: "data/processed"
+  feature_data_path: "data/features"
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+
+# 召回配置
+recall:
+  # 召回路数配置
+  channels:
+    - name: "item_cf"
+      weight: 0.15
+      top_k: 100
+    - name: "user_cf"
+      weight: 0.10
+      top_k: 80
+    - name: "two_tower"
+      weight: 0.25
+      top_k: 150
+    - name: "mind"
+      weight: 0.20
+      top_k: 120
+    - name: "deepwalk"
+      weight: 0.10
+      top_k: 80
+    - name: "hot"
+      weight: 0.10
+      top_k: 50
+    - name: "follow"
+      weight: 0.05
+      top_k: 30
+    - name: "new"
+      weight: 0.05
+      top_k: 40
+  
+  # 召回总数
+  total_recall_num: 500
+  
+  # 双塔模型配置
+  two_tower:
+    user_emb_dim: 128
+    item_emb_dim: 128
+    hidden_units: [256, 128, 64]
+    batch_size: 1024
+    learning_rate: 0.001
+    epochs: 20
+  
+  # MIND多兴趣配置
+  mind:
+    interest_num: 5
+    interest_dim: 64
+    capsule_num: 3
+    
+  # DeepWalk配置
+  deepwalk:
+    dimensions: 128
+    walk_length: 80
+    num_walks: 10
+    window_size: 5
+    workers: 8
+
+# 粗排配置
+pre_ranking:
+  model_type: "lr"  # logistic regression
+  top_k: 200
+  features:
+    - user_id
+    - item_id
+    - user_age
+    - item_category
+    - ctr_7d
+    - play_duration_avg
+
+# 精排配置
+ranking:
+  model_type: "din"  # din, dien, wide_deep, deepfm
+  top_k: 50
+  
+  # DIN模型配置
+  din:
+    attention_hidden_units: [80, 40]
+    dnn_hidden_units: [256, 128, 64]
+    embedding_dim: 32
+    sequence_length: 50
+    batch_size: 512
+    learning_rate: 0.001
+    epochs: 10
+    dropout: 0.2
+    
+  # 特征配置
+  features:
+    user_features:
+      - user_id
+      - age
+      - gender
+      - city
+      - device_type
+      - register_days
+      
+    item_features:
+      - item_id
+      - category
+      - author_id
+      - duration
+      - publish_time
+      - tag_list
+      
+    context_features:
+      - hour
+      - weekday
+      - is_weekend
+      - position
+      
+    statistical_features:
+      - user_click_7d
+      - user_play_7d
+      - item_ctr_7d
+      - item_play_rate_7d
+      - author_fan_count
+      
+    cross_features:
+      - user_category_click_7d
+      - user_author_click_7d
+      
+    sequence_features:
+      - user_click_seq
+      - user_category_seq
+      - user_duration_seq
+  
+  # 多目标配置
+  multi_task:
+    enabled: true
+    tasks:
+      - name: "ctr"
+        weight: 0.4
+      - name: "play_rate"
+        weight: 0.3
+      - name: "share"
+        weight: 0.2
+      - name: "like"
+        weight: 0.1
+
+# 重排配置
+reranking:
+  # 多样性配置
+  diversity:
+    enabled: true
+    algorithm: "mmr"  # mmr, dpp
+    lambda_param: 0.5  # 相关性和多样性的权重
+    category_diversity_weight: 0.3
+    author_diversity_weight: 0.3
+    
+  # 时效性配置
+  freshness:
+    enabled: true
+    decay_hours: 72
+    decay_rate: 0.8
+    
+  # 业务规则
+  business_rules:
+    # 同一作者去重
+    author_dedup:
+      enabled: true
+      max_same_author: 2
+      
+    # 同一类目控制
+    category_control:
+      enabled: true
+      max_same_category: 3
+      
+    # 内容安全过滤
+    content_filter:
+      enabled: true
+      
+    # 新内容扶持
+    new_item_boost:
+      enabled: true
+      new_threshold_hours: 24
+      boost_factor: 1.2
+
+# 特征工程配置
+features:
+  # 实时特征
+  realtime:
+    redis_host: "localhost"
+    redis_port: 6379
+    redis_db: 0
+    ttl: 86400  # 24小时
+    
+  # 离线特征
+  offline:
+    update_frequency: "daily"
+    storage_format: "parquet"
+    
+# 在线服务配置
+serving:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  timeout: 100  # ms
+  
+  # 缓存配置
+  cache:
+    user_profile_ttl: 3600
+    item_profile_ttl: 7200
+    recall_result_ttl: 300
+    
+  # 降级策略
+  fallback:
+    enabled: true
+    hot_list_size: 100
+
+# A/B测试配置
+ab_test:
+  enabled: true
+  experiment_name: "din_vs_deepfm"
+  traffic_split:
+    control: 0.5
+    treatment: 0.5
+  metrics:
+    - ctr
+    - play_rate
+    - dwell_time
+    - diversity
+
+# 监控配置
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+  
+  metrics:
+    - request_qps
+    - response_latency
+    - model_score_distribution
+    - cache_hit_rate
+    - error_rate
+    
+  alert_thresholds:
+    max_latency_ms: 100
+    min_qps: 1000
+    max_error_rate: 0.01
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "json"
+  file: "logs/recommendation.log"
+  rotation: "100 MB"
+  retention: "30 days"
+
+# 模型配置
+model:
+  save_dir: "models"
+  version_control: true
+  auto_save_best: true
+  
+# 训练配置
+training:
+  device: "cuda"  # cuda, cpu
+  mixed_precision: true
+  gradient_accumulation_steps: 2
+  max_grad_norm: 1.0
+  early_stopping_patience: 3
+  checkpoint_frequency: 1000
+
+# 评估配置
+evaluation:
+  metrics:
+    - auc
+    - gauc
+    - ndcg@10
+    - recall@50
+    - diversity
+    - coverage
+    - novelty
+  
+  offline:
+    test_size: 100000
+    
+  online:
+    ab_test_duration_days: 7
+    min_sample_size: 10000
