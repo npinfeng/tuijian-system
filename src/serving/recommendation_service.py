@@ -114,7 +114,7 @@ async def root():
 
 
 @app.post("/api/v1/recommend", response_model=RecommendResponse)
-async def recommend(request: RecommendRequest):
+def recommend(request: RecommendRequest):
     """
     推荐接口
     """
@@ -259,13 +259,16 @@ def rerank(user_id: int,
     items = [item_id for item_id, _ in candidates]
     scores = [score for _, score in candidates]
     
-    # 构造item_features DataFrame
-    item_features = pd.DataFrame({
-        'item_id': items,
-        'category': [f'category_{i % 5}' for i in items],  # 模拟类目
-        'author_id': [f'author_{i % 20}' for i in items],  # 模拟作者
-        'publish_time': [datetime.now() for _ in items],  # 模拟发布时间
-    })
+    # 构造item_features 列表
+    now = datetime.now()
+    item_features = [
+        {
+            'item_id': i,
+            'category': f'category_{i % 5}',
+            'author_id': f'author_{i % 20}',
+            'publish_time': now
+        } for i in items
+    ]
     
     # 重排
     reranked = model_manager.reranker.rerank(
@@ -278,16 +281,18 @@ def rerank(user_id: int,
     return reranked
 
 
+import random
+_hot_items_cache = list(range(1, 101))
+
 def get_hot_items(num: int = 50) -> List[tuple]:
     """
     获取热门物品（降级策略）
     """
-    # 模拟热门物品
-    hot_items = list(range(1, 101))
-    np.random.shuffle(hot_items)
+    # 随机采样热门物品
+    items = random.sample(_hot_items_cache, min(num, len(_hot_items_cache)))
     
     # 返回带分数的列表
-    return [(item_id, 1.0 / (i + 1)) for i, item_id in enumerate(hot_items[:num])]
+    return [(item_id, 1.0 / (i + 1)) for i, item_id in enumerate(items)]
 
 
 @app.post("/api/v1/feedback")

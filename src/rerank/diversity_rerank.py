@@ -26,14 +26,14 @@ class MMRReranker:
     def rerank(self,
                items: List[int],
                scores: List[float],
-               item_features: pd.DataFrame,
+               item_features,
                top_k: int = 10) -> List[Tuple[int, float]]:
         """
         MMR重排
         Args:
             items: 候选物品ID列表
             scores: 候选物品的相关性得分
-            item_features: 物品特征DataFrame，包含item_id和embedding列
+            item_features: 物品特征信息
             top_k: 返回top-k个物品
         Returns:
             重排后的推荐列表
@@ -43,8 +43,13 @@ class MMRReranker:
         
         # 获取物品embeddings
         item_feature_dict = {}
-        for _, row in item_features.iterrows():
-            item_feature_dict[row['item_id']] = row['embedding']
+        if isinstance(item_features, pd.DataFrame):
+            for _, row in item_features.iterrows():
+                item_feature_dict[row['item_id']] = row['embedding']
+        else:
+            for item in item_features:
+                if 'embedding' in item:
+                    item_feature_dict[item['item_id']] = item['embedding']
         
         # 初始化
         selected_items = []
@@ -121,7 +126,7 @@ class DiversityReranker:
     def rerank(self,
                items: List[int],
                scores: List[float],
-               item_features: pd.DataFrame,
+               item_features,
                top_k: int = 10) -> List[Tuple[int, float]]:
         """
         多样性重排
@@ -131,8 +136,12 @@ class DiversityReranker:
         
         # 创建item字典
         item_dict = {}
-        for _, row in item_features.iterrows():
-            item_dict[row['item_id']] = row.to_dict()
+        if isinstance(item_features, pd.DataFrame):
+            for _, row in item_features.iterrows():
+                item_dict[row['item_id']] = row.to_dict()
+        else:
+            for item in item_features:
+                item_dict[item['item_id']] = item
         
         # 初始化结果
         selected_items = []
@@ -142,6 +151,28 @@ class DiversityReranker:
         # 记录已选择的类目和作者
         selected_categories = []
         selected_authors = []
+        
+        import datetime
+        current_time = datetime.datetime.now()
+        
+        # 预计算时效性和新内容加权得分，避免在循环中重复计算
+        item_static_multiplier = {}
+        for item_id, _ in remaining_items:
+            item_info = item_dict.get(item_id)
+            if item_info is None:
+                item_static_multiplier[item_id] = 1.0
+                continue
+                
+            multiplier = 1.0
+            if self.freshness_config.get('enabled', True):
+                multiplier *= self._calculate_freshness(item_info, current_time)
+                
+            new_item_config = self.business_rules.get('new_item_boost', {})
+            if new_item_config.get('enabled', True):
+                if self._is_new_item(item_info, new_item_config.get('new_threshold_hours', 24), current_time):
+                    multiplier *= new_item_config.get('boost_factor', 1.2)
+                    
+            item_static_multiplier[item_id] = multiplier
         
         # 迭代选择
         while len(selected_items) < top_k and remaining_items:
@@ -172,16 +203,8 @@ class DiversityReranker:
                     
                     final_score -= (category_penalty + author_penalty)
                 
-                # 2. 时效性加权
-                if self.freshness_config.get('enabled', True):
-                    freshness_score = self._calculate_freshness(item_info)
-                    final_score *= freshness_score
-                
-                # 3. 新内容扶持
-                new_item_config = self.business_rules.get('new_item_boost', {})
-                if new_item_config.get('enabled', True):
-                    if self._is_new_item(item_info, new_item_config.get('new_threshold_hours', 24)):
-                        final_score *= new_item_config.get('boost_factor', 1.2)
+                # 应用预计算的乘数
+                final_score *= item_static_multiplier.get(item_id, 1.0)
                 
                 # 更新最佳物品
                 if final_score > best_score:
@@ -208,7 +231,7 @@ class DiversityReranker:
         
         return final_results
     
-    def _calculate_freshness(self, item_info: Dict) -> float:
+    def _calculate_freshness(self, item_info: Dict, now=None) -> float:
         """计算时效性得分"""
         import datetime
         
@@ -217,7 +240,8 @@ class DiversityReranker:
             return 1.0
         
         # 计算发布时长（小时）
-        now = datetime.datetime.now()
+        if now is None:
+            now = datetime.datetime.now()
         if isinstance(publish_time, str):
             publish_time = datetime.datetime.fromisoformat(publish_time)
         
@@ -231,7 +255,7 @@ class DiversityReranker:
         
         return max(0.1, min(1.0, freshness))  # 限制在[0.1, 1.0]范围
     
-    def _is_new_item(self, item_info: Dict, threshold_hours: int) -> bool:
+    def _is_new_item(self, item_info: Dict, threshold_hours: int, now=None) -> bool:
         """判断是否为新内容"""
         import datetime
         
@@ -239,7 +263,8 @@ class DiversityReranker:
         if publish_time is None:
             return False
         
-        now = datetime.datetime.now()
+        if now is None:
+            now = datetime.datetime.now()
         if isinstance(publish_time, str):
             publish_time = datetime.datetime.fromisoformat(publish_time)
         
