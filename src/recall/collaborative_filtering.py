@@ -35,11 +35,7 @@ class ItemCF:
         self.user_history = defaultdict(set)
     
     def fit(self, interactions: pd.DataFrame):
-        """
-        训练ItemCF模型
-        Args:
-            interactions: 交互数据，包含user_id, item_id列
-        """
+
         print("开始训练ItemCF模型...")
         
         # 构建用户历史

@@ -1,17 +1,14 @@
 """
 推荐服务主程序
-整合召回、排序、重排等模块
+整合召回、排序、重排等模块，纯Python本地调用的形式
 """
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from typing import List, Dict, Optional
-import uvicorn
 import yaml
 import numpy as np
 import pandas as pd
 from datetime import datetime
-
+import random
 import sys
 from pathlib import Path
 
@@ -19,35 +16,27 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+try:
+    from src.recall.collaborative_filtering import ItemCF, UserCF
+    from src.recall.two_tower_model import TwoTowerModel
+    from src.ranking.din_model import DIN
+except ImportError as e:
+    print(f"Warning: Failed to import some models (possibly missing tensorflow): {e}")
+    # Provide dummy classes for type hinting if needed, though they aren't strictly required
+    ItemCF = None
+    UserCF = None
+    TwoTowerModel = None
+    DIN = None
+
 from src.recall.collaborative_filtering import ItemCF, UserCF
-from src.recall.two_tower_model import TwoTowerModel
-from src.ranking.din_model import DIN
 from src.rerank.diversity_rerank import DiversityReranker
-from src.features.feature_engineering import RealtimeFeatureStore
+
+from src.features.feature_engineering import OfflineFeatureStore
 from src.utils.common import load_config
 
 
-app = FastAPI(title="推荐系统服务", version="1.0.0")
-
-
-# 请求模型
-class RecommendRequest(BaseModel):
-    user_id: int
-    scene: str = "feed"  # feed流、搜索、相关推荐等
-    num: int = 10
-    context: Optional[Dict] = None
-
-
-class RecommendResponse(BaseModel):
-    user_id: int
-    items: List[Dict]
-    trace_id: str
-    cost_time: int  # ms
-
-
-# 全局变量，存储模型
-class ModelManager:
-    """模型管理器"""
+class RecommendationService:
+    """推荐服务类，整合召回、排序、重排等模块"""
     
     def __init__(self):
         self.config = load_config('config/config.yaml')
@@ -63,282 +52,204 @@ class ModelManager:
         # 重排器
         self.reranker = DiversityReranker(self.config.get('reranking', {}))
         
-        # 特征存储
-        self.feature_store = RealtimeFeatureStore(self.config.get('features', {}))
+        # 离线批量特征存储查询接口
+        self.feature_store = OfflineFeatureStore(self.config.get('features', {}))
         
         # 加载模型
         self.load_models()
+        self._hot_items_cache = list(range(1, 101))
     
     def load_models(self):
         """加载所有模型"""
         print("开始加载模型...")
-        
         try:
-            # 加载ItemCF
             self.itemcf_model = ItemCF.load('models/itemcf_model.pkl')
             print("ItemCF模型加载成功")
         except Exception as e:
-            print(f"ItemCF模型加载失败: {e}")
-        
-        try:
-            # 加载UserCF
-            # self.usercf_model = UserCF.load('models/usercf_model.pkl')
-            print("UserCF模型加载跳过（demo）")
-        except Exception as e:
-            print(f"UserCF模型加载失败: {e}")
-        
-        # TODO: 加载深度学习模型
-        print("深度学习模型加载跳过（需要先训练）")
-        
+            print(f"ItemCF模型未找到或加载失败 (文件可能不存在): {e}")
+            
+        print("UserCF和深度学习模型加载跳过（demo）")
         print("模型加载完成！")
 
-
-model_manager = ModelManager()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """服务启动时的初始化"""
-    print("推荐服务启动中...")
-    print("服务启动完成！")
-
-
-@app.get("/")
-async def root():
-    """健康检查"""
-    return {
-        "service": "recommendation-system",
-        "status": "running",
-        "version": "1.0.0"
-    }
-
-
-@app.post("/api/v1/recommend", response_model=RecommendResponse)
-def recommend(request: RecommendRequest):
-    """
-    推荐接口
-    """
-    start_time = datetime.now()
-    trace_id = f"{request.user_id}_{int(start_time.timestamp() * 1000)}"
-    
-    try:
-        # 1. 多路召回
-        recall_results = multi_recall(
-            user_id=request.user_id,
-            num=model_manager.config['recall']['total_recall_num']
-        )
+    def recommend(self, user_id: int, scene: str = "feed", num: int = 10, context: Optional[Dict] = None) -> Dict:
+        """
+        推荐主接口
+        """
+        start_time = datetime.now()
+        trace_id = f"{user_id}_{int(start_time.timestamp() * 1000)}"
         
-        if not recall_results:
-            # 降级：返回热门推荐
-            recall_results = get_hot_items(request.num)
+        try:
+            # 1. 多路召回
+            recall_results = self.multi_recall(
+                user_id=user_id,
+                num=self.config.get('recall', {}).get('total_recall_num', 500)
+            )
+            
+            if not recall_results:
+                # 降级：返回热门推荐
+                recall_results = self.get_hot_items(num)
+            
+            # 3. 精排
+            ranking_results = self.ranking(
+                user_id=user_id,
+                candidates=recall_results,
+                context=context
+            )
+            
+            # 4. 重排
+            final_results = self.rerank(
+                user_id=user_id,
+                candidates=ranking_results,
+                top_k=num
+            )
+            
+            # 5. 构造返回结果
+            items = []
+            for item_id, score in final_results:
+                items.append({
+                    'item_id': item_id,
+                    'score': float(score),
+                    'reason': 'personalized'
+                })
+            
+            cost_time = int((datetime.now() - start_time).total_seconds() * 1000)
+            
+            return {
+                "user_id": user_id,
+                "items": items,
+                "trace_id": trace_id,
+                "cost_time": cost_time
+            }
         
-        # 2. 粗排（可选）
-        # pre_ranking_results = pre_ranking(recall_results)
+        except Exception as e:
+            print(f"推荐失败: {e}")
+            return {"error": str(e)}
+
+    def multi_recall(self, user_id: int, num: int = 500) -> List[tuple]:
+        """多路召回"""
+        all_candidates = []
         
-        # 3. 精排
-        ranking_results = ranking(
-            user_id=request.user_id,
-            candidates=recall_results,
-            context=request.context
-        )
+        # 1. ItemCF召回
+        if self.itemcf_model:
+            try:
+                itemcf_results = self.itemcf_model.recommend(user_id=user_id, n=100)
+                weight = 0.15
+                itemcf_results = [(item_id, score * weight) for item_id, score in itemcf_results]
+                all_candidates.extend(itemcf_results)
+            except Exception as e:
+                print(f"ItemCF召回警告: {e}")
         
-        # 4. 重排
-        final_results = rerank(
-            user_id=request.user_id,
-            candidates=ranking_results,
-            top_k=request.num
-        )
+        # 2. UserCF召回 (如果存在)
+        if self.usercf_model:
+            try:
+                usercf_results = self.usercf_model.recommend(user_id=user_id, n=80)
+                weight = 0.10
+                usercf_results = [(item_id, score * weight) for item_id, score in usercf_results]
+                all_candidates.extend(usercf_results)
+            except Exception:
+                pass
         
-        # 5. 构造返回结果
+        # 热门召回（保底）
+        hot_items = self.get_hot_items(50)
+        all_candidates.extend(hot_items)
+        
+        # 合并去重，按分数排序
+        item_scores = {}
+        for item_id, score in all_candidates:
+            item_scores[item_id] = item_scores.get(item_id, 0) + score
+        
+        # 排序
+        sorted_items = sorted(item_scores.items(), key=lambda x: x[1], reverse=True)
+        return sorted_items[:num]
+
+    def ranking(self, user_id: int, candidates: List[tuple], context: Optional[Dict] = None) -> List[tuple]:
+        """精排"""
+        if not candidates:
+            return []
+        return candidates
+
+    def rerank(self, user_id: int, candidates: List[tuple], top_k: int = 10) -> List[tuple]:
+        """重排"""
+        if not candidates:
+            return []
+        
+        # 模拟物品特征数据
         items = []
-        for item_id, score in final_results:
-            items.append({
+        scores = []
+        item_features = []
+        now = datetime.now()
+        
+        for item_id, score in candidates:
+            items.append(item_id)
+            scores.append(score)
+            item_features.append({
                 'item_id': item_id,
-                'score': float(score),
-                'reason': 'personalized'
+                'category': f'category_{item_id % 5}',
+                'author_id': f'author_{item_id % 20}',
+                'publish_time': now
             })
-        
-        cost_time = int((datetime.now() - start_time).total_seconds() * 1000)
-        
-        return RecommendResponse(
-            user_id=request.user_id,
+            
+        reranked = self.reranker.rerank(
             items=items,
-            trace_id=trace_id,
-            cost_time=cost_time
+            scores=scores,
+            item_features=item_features,
+            top_k=top_k
         )
-    
-    except Exception as e:
-        print(f"推荐失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return reranked
 
+    def get_hot_items(self, num: int = 50) -> List[tuple]:
+        """获取热门物品（降级策略）"""
+        items = random.sample(self._hot_items_cache, min(num, len(self._hot_items_cache)))
+        return [(item_id, 1.0 / (i + 1)) for i, item_id in enumerate(items)]
 
-def multi_recall(user_id: int, num: int = 500) -> List[tuple]:
-    """
-    多路召回
-    Returns:
-        List of (item_id, score) tuples
-    """
-    all_candidates = []
-    
-    # 1. ItemCF召回
-    if model_manager.itemcf_model:
+    def feedback(self, user_id: int, item_id: int, action: str):
+        """用户反馈接口，收集用户行为数据，用于实时特征更新"""
         try:
-            itemcf_results = model_manager.itemcf_model.recommend(
-                user_id=user_id,
-                n=100
-            )
-            # 加权
-            weight = 0.15
-            itemcf_results = [(item_id, score * weight) for item_id, score in itemcf_results]
-            all_candidates.extend(itemcf_results)
+            if action == 'click':
+                self.feature_store.update_item_ctr(item_id, 1)
+            elif action == 'impression':
+                self.feature_store.update_item_ctr(item_id, 0)
+            return {"status": "success", "message": "反馈已记录"}
         except Exception as e:
-            print(f"ItemCF召回失败: {e}")
-    
-    # 2. UserCF召回
-    if model_manager.usercf_model:
-        try:
-            usercf_results = model_manager.usercf_model.recommend(
-                user_id=user_id,
-                n=80
-            )
-            weight = 0.10
-            usercf_results = [(item_id, score * weight) for item_id, score in usercf_results]
-            all_candidates.extend(usercf_results)
-        except Exception as e:
-            print(f"UserCF召回失败: {e}")
-    
-    # 3. 双塔模型召回（需要实现向量检索）
-    # TODO: 实现基于Faiss的向量检索
-    
-    # 4. 热门召回（保底）
-    hot_items = get_hot_items(50)
-    all_candidates.extend(hot_items)
-    
-    # 合并去重，按分数排序
-    item_scores = {}
-    for item_id, score in all_candidates:
-        if item_id in item_scores:
-            item_scores[item_id] += score  # 累加分数
-        else:
-            item_scores[item_id] = score
-    
-    # 排序
-    sorted_items = sorted(item_scores.items(), key=lambda x: x[1], reverse=True)
-    
-    return sorted_items[:num]
+            print(f"反馈记录失败: {e}")
+            return {"status": "error", "message": str(e)}
 
-
-def ranking(user_id: int, 
-           candidates: List[tuple],
-           context: Optional[Dict] = None) -> List[tuple]:
-    """
-    精排
-    """
-    if not candidates:
-        return []
-    
-    # 如果有深度模型，使用深度模型打分
-    if model_manager.ranking_model:
-        # TODO: 实现DIN模型推理
-        pass
-    
-    # 否则直接返回召回结果
-    return candidates
-
-
-def rerank(user_id: int,
-          candidates: List[tuple],
-          top_k: int = 10) -> List[tuple]:
-    """
-    重排
-    """
-    if not candidates:
-        return []
-    
-    # 模拟物品特征数据
-    items = [item_id for item_id, _ in candidates]
-    scores = [score for _, score in candidates]
-    
-    # 构造item_features 列表
-    now = datetime.now()
-    item_features = [
-        {
-            'item_id': i,
-            'category': f'category_{i % 5}',
-            'author_id': f'author_{i % 20}',
-            'publish_time': now
-        } for i in items
-    ]
-    
-    # 重排
-    reranked = model_manager.reranker.rerank(
-        items=items,
-        scores=scores,
-        item_features=item_features,
-        top_k=top_k
-    )
-    
-    return reranked
-
-
-import random
-_hot_items_cache = list(range(1, 101))
-
-def get_hot_items(num: int = 50) -> List[tuple]:
-    """
-    获取热门物品（降级策略）
-    """
-    # 随机采样热门物品
-    items = random.sample(_hot_items_cache, min(num, len(_hot_items_cache)))
-    
-    # 返回带分数的列表
-    return [(item_id, 1.0 / (i + 1)) for i, item_id in enumerate(items)]
-
-
-@app.post("/api/v1/feedback")
-async def feedback(user_id: int, item_id: int, action: str):
-    """
-    用户反馈接口
-    收集用户行为数据，用于实时特征更新
-    """
-    try:
-        # 更新实时特征
-        if action == 'click':
-            model_manager.feature_store.update_item_ctr(item_id, 1)
-        elif action == 'impression':
-            model_manager.feature_store.update_item_ctr(item_id, 0)
-        
-        return {"status": "success", "message": "反馈已记录"}
-    
-    except Exception as e:
-        print(f"反馈记录失败: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-@app.get("/api/v1/stats")
-async def stats():
-    """
-    系统统计信息
-    """
-    return {
-        "total_users": "5000000+",
-        "total_items": "1000000+",
-        "daily_requests": "1000000000+",
-        "avg_response_time": "45ms",
-        "models": {
-            "itemcf": model_manager.itemcf_model is not None,
-            "usercf": model_manager.usercf_model is not None,
-            "two_tower": model_manager.two_tower_model is not None,
-            "ranking": model_manager.ranking_model is not None,
+    def stats(self):
+        """系统统计信息"""
+        return {
+            "total_users": "5000000+",
+            "total_items": "1000000+",
+            "models": {
+                "itemcf": self.itemcf_model is not None,
+                "usercf": self.usercf_model is not None,
+                "two_tower": self.two_tower_model is not None,
+                "ranking": self.ranking_model is not None,
+            }
         }
-    }
 
 
 if __name__ == "__main__":
-    # 启动服务
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=8000,
-        log_level="info"
-    )
+    # 使用示例
+    print("="*50)
+    print("推荐系统本地测试运行")
+    print("="*50)
+    
+    # 初始化服务
+    service = RecommendationService()
+    
+    user_id = 1001
+    
+    # 模拟获取推荐
+    print(f"\n获取用户 {user_id} 的推荐结果:")
+    res = service.recommend(user_id=user_id, num=5)
+    print(yaml.dump(res, allow_unicode=True))
+    
+    # 模拟用户反馈
+    if "items" in res and res["items"]:
+        first_item = res['items'][0]['item_id']
+        print(f"\n记录用户 {user_id} 点击 物品 {first_item} 的行为:")
+        service.feedback(user_id=user_id, item_id=first_item, action='click')
+    
+    # 查看统计
+    print("\n系统状态:")
+    print(yaml.dump(service.stats(), allow_unicode=True))

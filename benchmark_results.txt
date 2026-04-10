@@ -1,0 +1,62 @@
+﻿Initializing service...
+开始加载模型...
+模型已从 models/itemcf_model.pkl 加载
+ItemCF模型加载成功
+UserCF和深度学习模型加载跳过（demo）
+模型加载完成！
+Warming up...
+
+--- Benchmark Results ---
+Total Requests: 10
+Total Time: 0.0020 seconds
+QPS: 4993.81 req/s
+Average Latency: 0.20 ms
+
+Starting Main Benchmark & Profiling...
+
+--- Benchmark Results ---
+Total Requests: 500
+Total Time: 0.2775 seconds
+QPS: 1802.09 req/s
+Average Latency: 0.55 ms
+
+--- Profiling Output (Top 30 by cumulative time) ---
+         1016763 function calls in 0.278 seconds
+
+   Ordered by: cumulative time
+   List reduced from 37 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.001    0.001    0.278    0.278 F:\npfcode\tuijian-system\scripts\benchmark.py:7(run_benchmark)
+      500    0.005    0.000    0.277    0.001 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:74(recommend)
+      500    0.018    0.000    0.233    0.000 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:171(rerank)
+      500    0.161    0.000    0.211    0.000 F:\npfcode\tuijian-system\src\rerank\diversity_rerank.py:127(rerank)
+      500    0.007    0.000    0.039    0.000 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:128(multi_recall)
+   683818    0.034    0.000    0.034    0.000 {method 'get' of 'dict' objects}
+      500    0.001    0.000    0.025    0.000 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:200(get_hot_items)
+      500    0.008    0.000    0.021    0.000 C:\Users\lsk\.conda\envs\tuijian\Lib\random.py:385(sample)
+    25000    0.009    0.000    0.012    0.000 C:\Users\lsk\.conda\envs\tuijian\Lib\random.py:235(_randbelow_with_getrandbits)
+      500    0.006    0.000    0.008    0.000 F:\npfcode\tuijian-system\src\rerank\diversity_rerank.py:250(_apply_business_rules)
+    95084    0.005    0.000    0.005    0.000 {method 'append' of 'list' objects}
+      510    0.003    0.000    0.004    0.000 {built-in method builtins.sorted}
+    25528    0.003    0.000    0.003    0.000 {built-in method builtins.min}
+      500    0.003    0.000    0.003    0.000 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:203(<listcomp>)
+    25028    0.003    0.000    0.003    0.000 {built-in method builtins.max}
+    26028    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
+    25528    0.002    0.000    0.002    0.000 {method 'total_seconds' of 'datetime.timedelta' objects}
+    36657    0.002    0.000    0.002    0.000 {method 'getrandbits' of '_random.Random' objects}
+    25028    0.002    0.000    0.002    0.000 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:162(<lambda>)
+    25000    0.001    0.000    0.001    0.000 {method 'bit_length' of 'int' objects}
+     5000    0.001    0.000    0.001    0.000 {method 'pop' of 'list' objects}
+      500    0.001    0.000    0.001    0.000 F:\npfcode\tuijian-system\src\recall\collaborative_filtering.py:140(recommend)
+     2000    0.001    0.000    0.001    0.000 {built-in method now}
+     7000    0.000    0.000    0.000    0.000 {built-in method builtins.len}
+      500    0.000    0.000    0.000    0.000 <frozen abc>:117(__instancecheck__)
+      500    0.000    0.000    0.000    0.000 {built-in method _abc._abc_instancecheck}
+      500    0.000    0.000    0.000    0.000 {built-in method math.log}
+     1000    0.000    0.000    0.000    0.000 {method 'extend' of 'list' objects}
+      500    0.000    0.000    0.000    0.000 {method 'timestamp' of 'datetime.datetime' objects}
+      500    0.000    0.000    0.000    0.000 F:\npfcode\tuijian-system\src\serving\recommendation_service.py:137(<listcomp>)
+
+
+

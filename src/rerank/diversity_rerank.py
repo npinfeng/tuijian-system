@@ -5,6 +5,7 @@ MMR (Maximal Marginal Relevance) 多样性重排算法
 import numpy as np
 from typing import List, Dict, Tuple
 import pandas as pd
+import datetime
 
 
 class MMRReranker:
@@ -148,31 +149,54 @@ class DiversityReranker:
         selected_scores = []
         remaining_items = list(zip(items, scores))
         
-        # 记录已选择的类目和作者
-        selected_categories = []
-        selected_authors = []
+        # 记录已选择的类目和作者增量数量
+        category_counts = {}
+        author_counts = {}
         
-        import datetime
         current_time = datetime.datetime.now()
         
-        # 预计算时效性和新内容加权得分，避免在循环中重复计算
-        item_static_multiplier = {}
+        # 预计算缓存以避免循环中的字典查找
+        item_cache = {}
+        
+        freshness_enabled = self.freshness_config.get('enabled', True)
+        new_item_config = self.business_rules.get('new_item_boost', {})
+        new_item_enabled = new_item_config.get('enabled', True)
+        new_threshold_hours = new_item_config.get('new_threshold_hours', 24)
+        boost_factor = new_item_config.get('boost_factor', 1.2)
+        
+        diversity_enabled = self.diversity_config.get('enabled', True)
+        cat_div_weight = self.diversity_config.get('category_diversity_weight', 0.3)
+        author_div_weight = self.diversity_config.get('author_diversity_weight', 0.3)
+        
         for item_id, _ in remaining_items:
             item_info = item_dict.get(item_id)
             if item_info is None:
-                item_static_multiplier[item_id] = 1.0
+                item_cache[item_id] = (1.0, None, None)
                 continue
                 
             multiplier = 1.0
-            if self.freshness_config.get('enabled', True):
-                multiplier *= self._calculate_freshness(item_info, current_time)
+            
+            # 使用单次 parse 提取发文时间以避免冗余
+            publish_time = item_info.get('publish_time')
+            hours_since_publish = 0.0
+            if publish_time is not None:
+                if isinstance(publish_time, str):
+                    publish_time = datetime.datetime.fromisoformat(publish_time)
+                hours_since_publish = (current_time - publish_time).total_seconds() / 3600.0
                 
-            new_item_config = self.business_rules.get('new_item_boost', {})
-            if new_item_config.get('enabled', True):
-                if self._is_new_item(item_info, new_item_config.get('new_threshold_hours', 24), current_time):
-                    multiplier *= new_item_config.get('boost_factor', 1.2)
+                if freshness_enabled:
+                    decay_hours = self.freshness_config.get('decay_hours', 72)
+                    decay_rate = self.freshness_config.get('decay_rate', 0.8)
+                    freshness = decay_rate ** (hours_since_publish / decay_hours)
+                    multiplier *= max(0.1, min(1.0, freshness))
                     
-            item_static_multiplier[item_id] = multiplier
+                if new_item_enabled and hours_since_publish <= new_threshold_hours:
+                    multiplier *= boost_factor
+
+            category = item_info.get('category')
+            author = item_info.get('author_id')
+                    
+            item_cache[item_id] = (multiplier, category, author)
         
         # 迭代选择
         while len(selected_items) < top_k and remaining_items:
@@ -181,30 +205,20 @@ class DiversityReranker:
             best_idx = -1
             
             for idx, (item_id, base_score) in enumerate(remaining_items):
-                item_info = item_dict.get(item_id)
-                if item_info is None:
-                    continue
+                multiplier, category, author = item_cache[item_id]
                 
                 # 计算综合得分
                 final_score = base_score
                 
-                # 1. 多样性惩罚
-                if self.diversity_config.get('enabled', True):
-                    category = item_info.get('category')
-                    author = item_info.get('author_id')
+                # 1. 多样性惩罚 (O(1) 字典查询替代列表count)
+                if diversity_enabled:
+                    cat_count = category_counts.get(category, 0)
+                    auth_count = author_counts.get(author, 0)
                     
-                    # 类目多样性
-                    category_count = selected_categories.count(category)
-                    category_penalty = category_count * self.diversity_config.get('category_diversity_weight', 0.3)
-                    
-                    # 作者多样性
-                    author_count = selected_authors.count(author)
-                    author_penalty = author_count * self.diversity_config.get('author_diversity_weight', 0.3)
-                    
-                    final_score -= (category_penalty + author_penalty)
+                    final_score -= (cat_count * cat_div_weight + auth_count * author_div_weight)
                 
                 # 应用预计算的乘数
-                final_score *= item_static_multiplier.get(item_id, 1.0)
+                final_score *= multiplier
                 
                 # 更新最佳物品
                 if final_score > best_score:
@@ -219,9 +233,11 @@ class DiversityReranker:
                 selected_scores.append(best_score)
                 
                 # 更新已选类目和作者
-                item_info = item_dict[item_id]
-                selected_categories.append(item_info.get('category'))
-                selected_authors.append(item_info.get('author_id'))
+                _, category, author = item_cache[item_id]
+                if category is not None:
+                    category_counts[category] = category_counts.get(category, 0) + 1
+                if author is not None:
+                    author_counts[author] = author_counts.get(author, 0) + 1
         
         # 应用业务规则
         final_results = self._apply_business_rules(
@@ -230,47 +246,6 @@ class DiversityReranker:
         )
         
         return final_results
-    
-    def _calculate_freshness(self, item_info: Dict, now=None) -> float:
-        """计算时效性得分"""
-        import datetime
-        
-        publish_time = item_info.get('publish_time')
-        if publish_time is None:
-            return 1.0
-        
-        # 计算发布时长（小时）
-        if now is None:
-            now = datetime.datetime.now()
-        if isinstance(publish_time, str):
-            publish_time = datetime.datetime.fromisoformat(publish_time)
-        
-        hours_since_publish = (now - publish_time).total_seconds() / 3600
-        
-        # 指数衰减
-        decay_hours = self.freshness_config.get('decay_hours', 72)
-        decay_rate = self.freshness_config.get('decay_rate', 0.8)
-        
-        freshness = decay_rate ** (hours_since_publish / decay_hours)
-        
-        return max(0.1, min(1.0, freshness))  # 限制在[0.1, 1.0]范围
-    
-    def _is_new_item(self, item_info: Dict, threshold_hours: int, now=None) -> bool:
-        """判断是否为新内容"""
-        import datetime
-        
-        publish_time = item_info.get('publish_time')
-        if publish_time is None:
-            return False
-        
-        if now is None:
-            now = datetime.datetime.now()
-        if isinstance(publish_time, str):
-            publish_time = datetime.datetime.fromisoformat(publish_time)
-        
-        hours_since_publish = (now - publish_time).total_seconds() / 3600
-        
-        return hours_since_publish <= threshold_hours
     
     def _apply_business_rules(self,
                              recommendations: List[Tuple[int, float]],

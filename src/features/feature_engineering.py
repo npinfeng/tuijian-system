@@ -7,8 +7,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 from datetime import datetime, timedelta
-import redis
 import json
+import time
 
 
 class FeatureEngineer:
@@ -202,70 +202,70 @@ class FeatureEngineer:
         return cross_features
 
 
-class RealtimeFeatureStore:
+class OfflineFeatureStore:
     """
-    实时特征存储
-    基于Redis
+    离线特征存储
+    基于本地内存字典 (用于面试项目和本地测试的离线特征检索)
     """
     
     def __init__(self, config: Dict):
         self.config = config
-        redis_config = config.get('realtime', {})
-        
-        self.redis_client = redis.Redis(
-            host=redis_config.get('redis_host', 'localhost'),
-            port=redis_config.get('redis_port', 6379),
-            db=redis_config.get('redis_db', 0),
-            decode_responses=True
-        )
-        
-        self.ttl = redis_config.get('ttl', 86400)  # 24小时
+        self.store = {}
+        self.ttl = config.get('realtime', {}).get('ttl', 86400)  # 24小时
     
+    def _is_expired(self, key: str) -> bool:
+        if key in self.store:
+            data = self.store[key]
+            if time.time() > data['expire_at']:
+                self.store.pop(key, None)
+                return True
+            return False
+        return True
+
     def get_user_features(self, user_id: int) -> Dict:
-        """获取用户实时特征"""
+        """获取用户离线推断特征"""
         key = f"user_features:{user_id}"
-        features_json = self.redis_client.get(key)
-        
-        if features_json:
-            return json.loads(features_json)
+        if not self._is_expired(key):
+            return json.loads(self.store[key]['value'])
         return {}
     
     def set_user_features(self, user_id: int, features: Dict):
-        """设置用户实时特征"""
+        """设置用户离线特征"""
         key = f"user_features:{user_id}"
-        self.redis_client.setex(
-            key,
-            self.ttl,
-            json.dumps(features)
-        )
+        self.store[key] = {
+            'value': json.dumps(features),
+            'expire_at': time.time() + self.ttl
+        }
     
     def get_item_features(self, item_id: int) -> Dict:
-        """获取物品实时特征"""
+        """获取物品离线推断特征"""
         key = f"item_features:{item_id}"
-        features_json = self.redis_client.get(key)
-        
-        if features_json:
-            return json.loads(features_json)
+        if not self._is_expired(key):
+            return json.loads(self.store[key]['value'])
         return {}
     
     def set_item_features(self, item_id: int, features: Dict):
-        """设置物品实时特征"""
+        """设置物品离线特征"""
         key = f"item_features:{item_id}"
-        self.redis_client.setex(
-            key,
-            self.ttl,
-            json.dumps(features)
-        )
+        self.store[key] = {
+            'value': json.dumps(features),
+            'expire_at': time.time() + self.ttl
+        }
     
     def increment_counter(self, key: str, amount: int = 1):
         """增加计数器"""
-        self.redis_client.incrby(key, amount)
-        self.redis_client.expire(key, self.ttl)
+        if self._is_expired(key):
+            self.store[key] = {'value': str(amount), 'expire_at': time.time() + self.ttl}
+        else:
+            current_value = int(self.store[key]['value'])
+            self.store[key]['value'] = str(current_value + amount)
+            self.store[key]['expire_at'] = time.time() + self.ttl
     
     def get_counter(self, key: str) -> int:
         """获取计数器值"""
-        value = self.redis_client.get(key)
-        return int(value) if value else 0
+        if not self._is_expired(key):
+            return int(self.store[key]['value'])
+        return 0
     
     def update_item_ctr(self, item_id: int, is_click: int):
         """
