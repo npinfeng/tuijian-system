@@ -208,13 +208,13 @@ class DataGenerator:
 def main():
     """主函数"""
     generator = DataGenerator(
-        n_users=10000,
-        n_items=50000,
+        n_users=1000,
+        n_items=5000,
         n_categories=20,
         n_authors=1000
     )
     
-    generator.generate_all(n_interactions=1000000)
+    generator.generate_all(n_interactions=50000)
 
 
 if __name__ == '__main__':
