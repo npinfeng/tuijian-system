@@ -346,3 +346,37 @@ class UserCF:
         )[:n]
         
         return recommendations
+
+    def save(self, filepath: str):
+        """保存模型"""
+        model_data = {
+            'similarity_type': self.similarity_type,
+            'top_k_similar': self.top_k_similar,
+            'user_similarity_matrix': self.user_similarity_matrix,
+            'user_to_idx': self.user_to_idx,
+            'idx_to_user': self.idx_to_user,
+            'user_history': dict(self.user_history),
+            'item_users': {k: list(v) for k, v in self.item_users.items()},
+        }
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+        print(f"UserCF 模型已保存到 {filepath}")
+
+    @classmethod
+    def load(cls, filepath: str) -> 'UserCF':
+        """加载模型"""
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+
+        model = cls(
+            similarity_type=model_data['similarity_type'],
+            top_k_similar=model_data['top_k_similar']
+        )
+        model.user_similarity_matrix = model_data['user_similarity_matrix']
+        model.user_to_idx = model_data['user_to_idx']
+        model.idx_to_user = model_data['idx_to_user']
+        model.user_history = defaultdict(set, model_data['user_history'])
+        model.item_users = defaultdict(set,
+            {k: set(v) for k, v in model_data.get('item_users', {}).items()})
+        print(f"UserCF 模型已从 {filepath} 加载")
+        return model
