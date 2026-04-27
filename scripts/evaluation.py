@@ -267,7 +267,6 @@ def main():
         'is_like': np.random.binomial(1, 0.05, 5000),
         'is_share': np.random.binomial(1, 0.02, 5000),
     })
-    
     # 实验组 (新策略, CTR较高)
     treatment_data = pd.DataFrame({
         'user_id': np.random.randint(0, 1000, 5000),
