@@ -5,6 +5,7 @@ data:
   raw_data_path: "data/raw"
   processed_data_path: "data/processed"
   feature_data_path: "data/features"
+  kuairand_path: "e:/data/KuaiRand-1K/data"
   train_ratio: 0.8
   val_ratio: 0.1
   test_ratio: 0.1
@@ -22,9 +23,6 @@ recall:
     - name: "two_tower"
       weight: 0.25
       top_k: 150
-    - name: "mind"
-      weight: 0.20
-      top_k: 120
     - name: "deepwalk"
       weight: 0.10
       top_k: 80
@@ -87,10 +85,11 @@ ranking:
     dnn_hidden_units: [256, 128, 64]
     embedding_dim: 32
     sequence_length: 50
-    batch_size: 512
+    batch_size: 1024
     learning_rate: 0.001
-    epochs: 10
+    epochs: 5
     dropout: 0.2
+    max_train_rows: 500000
     
   # 特征配置
   features:

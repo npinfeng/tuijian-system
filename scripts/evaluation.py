@@ -231,57 +231,50 @@ def print_ab_test_results(comparison: Dict[str, Dict]):
     print("="*70 + "\n")
 
 
+from src.data.kuairand_loader import (
+    load_kuairand_splits, 
+    load_user_features, 
+    load_video_features
+)
+
+
 def main():
     """主评估流程"""
     
-    # 示例：生成模拟评估数据
-    print("生成模拟评估数据...")
+    print("="*55)
+    print("加载 KuaiRand-1K 数据进行评估演示")
+    print("="*55)
     
-    n_samples = 10000
-    predictions = pd.DataFrame({
-        'user_id': np.random.randint(0, 1000, n_samples),
-        'item_id': np.random.randint(0, 5000, n_samples),
-        'label': np.random.binomial(1, 0.15, n_samples),
-        'pred_score': np.random.beta(2, 5, n_samples)
-    })
+    # 1. 加载数据
+    user_features = load_user_features()
+    # 采样一部分视频特征，避免内存占用过大
+    item_features = load_video_features(sample_n=100000).reset_index()
+    item_features = item_features.rename(columns={'video_id': 'item_id'})
     
-    item_features = pd.DataFrame({
-        'item_id': range(5000),
-        'category': [f'cat_{i % 10}' for i in range(5000)]
-    })
+    train_log, val_log, test_log = load_kuairand_splits(
+        use_early_log_as_train=False,
+        val_ratio=0.2,
+        verbose=True
+    )
     
-    # 1. 离线评估
+    # 2. 离线评估示例 (使用测试集作为模拟预测结果)
+    # 实际场景中，这里应该是模型对测试集的预测分数
+    print("\n[示例] 对测试集(log_random)进行离线指标计算...")
+    predictions = test_log.copy()
+    # 模拟一个预测分数 (在真实标签基础上加点噪声)
+    predictions['pred_score'] = predictions['is_click'] * 0.6 + np.random.beta(2, 5, len(predictions)) * 0.4
+    predictions['label'] = predictions['is_click']
+    
     offline_metrics = offline_evaluation(predictions, item_features)
     print_metrics(offline_metrics)
     
-    # 2. 在线A/B测试 (模拟)
-    print("\n模拟在线A/B测试...")
-    
-    # 对照组 (原策略, CTR较低)
-    control_data = pd.DataFrame({
-        'user_id': np.random.randint(0, 1000, 5000),
-        'item_id': np.random.randint(0, 5000, 5000),
-        'is_click': np.random.binomial(1, 0.12, 5000),
-        'is_finish': np.random.binomial(1, 0.35, 5000),
-        'watch_time': np.random.exponential(45, 5000),
-        'is_like': np.random.binomial(1, 0.05, 5000),
-        'is_share': np.random.binomial(1, 0.02, 5000),
-    })
-    # 实验组 (新策略, CTR较高)
-    treatment_data = pd.DataFrame({
-        'user_id': np.random.randint(0, 1000, 5000),
-        'item_id': np.random.randint(0, 5000, 5000),
-        'is_click': np.random.binomial(1, 0.15, 5000),  # CTR提升25%
-        'is_finish': np.random.binomial(1, 0.42, 5000),  # 完播率提升20%
-        'watch_time': np.random.exponential(55, 5000),   # 观看时长提升22%
-        'is_like': np.random.binomial(1, 0.06, 5000),
-        'is_share': np.random.binomial(1, 0.025, 5000),
-    })
-    
-    comparison = online_ab_test(control_data, treatment_data)
+    # 3. 在线A/B测试分析示例
+    print("\n[示例] A/B测试对比分析 (log_standard vs log_random)...")
+    # 这里只是演示逻辑，通常是对比两个实验组
+    comparison = online_ab_test(val_log, test_log)
     print_ab_test_results(comparison)
     
-    print("\n评估完成！")
+    print("\n评估演示完成！")
 
 
 if __name__ == '__main__':
