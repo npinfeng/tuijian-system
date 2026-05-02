@@ -117,7 +117,11 @@ def load_video_features(data_dir: Path = KUAIRAND_DATA_DIR,
 
     df['video_type_id'] = df['video_type'].map(VIDEO_TYPE_MAP).fillna(2).astype(int)
     df['duration_s']    = (df['video_duration'].fillna(0) / 1000).clip(0, 600)  # ms → s，最多10分钟
-    df['tag']           = df['tag'].fillna(0).astype(int)
+    # 处理可能存在的多个标签（如 "20,43"），只取第一个
+    if df['tag'].dtype == object:
+        df['tag'] = df['tag'].astype(str).str.split(',').str[0].replace('nan', '0').astype(int)
+    else:
+        df['tag'] = df['tag'].fillna(0).astype(int)
 
     return df[['video_id', 'video_type_id', 'duration_s', 'tag']].set_index('video_id')
 
