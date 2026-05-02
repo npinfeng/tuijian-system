@@ -5,7 +5,7 @@ data:
   raw_data_path: "data/raw"
   processed_data_path: "data/processed"
   feature_data_path: "data/features"
-  kuairand_path: "e:/data/KuaiRand-1K/data"
+  kuairand_path: "F:/npfcode/data/KuaiRand-1K/data"
   train_ratio: 0.8
   val_ratio: 0.1
   test_ratio: 0.1
