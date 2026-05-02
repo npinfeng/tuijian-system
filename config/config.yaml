@@ -87,7 +87,7 @@ ranking:
     sequence_length: 50
     batch_size: 1024
     learning_rate: 0.001
-    epochs: 5
+    epochs: 20
     dropout: 0.2
     max_train_rows: 500000
     
