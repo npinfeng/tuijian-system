@@ -51,7 +51,7 @@ class FollowRecall:
         构建关注召回所需的数据结构
         Args:
             interactions: 交互记录，需含 user_id, item_id, author_id（可选）
-            items: 物品信息表，需含 item_id, author_id, publish_time
+            items: 物品信息表，需含 video_id（或 item_id）, author_id, publish_time
             follow_records: 关注记录表，需含 user_id, author_id
                            如无真实关注数据，从历史交互中推断用户偏好的作者
         """
@@ -60,9 +60,11 @@ class FollowRecall:
         cutoff = current_time - timedelta(days=self.time_window_days)
 
         # 1. 构建作者-物品索引（只保留时间窗口内的内容）
+        # 兼容 KuaiRand video_id 字段（reset_index 后列名为 video_id）
+        id_col = 'video_id' if 'video_id' in items.columns else 'item_id'
         item_author_map: Dict[int, int] = {}
         for _, row in items.iterrows():
-            item_id = int(row['item_id'])
+            item_id = int(row[id_col])
             author_id = int(row.get('author_id', 0))
             item_author_map[item_id] = author_id
 
