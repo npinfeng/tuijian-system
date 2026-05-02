@@ -33,6 +33,7 @@ class ItemCF:
         
         # 用户历史行为
         self.user_history = defaultdict(set)
+        self.filter_history = True
     
     def fit(self, interactions: pd.DataFrame):
 
@@ -164,7 +165,7 @@ class ItemCF:
                 similar_item_id = self.idx_to_item[similar_item_idx]
                 
                 # 过滤已交互物品
-                if similar_item_id in user_items:
+                if self.filter_history and similar_item_id in user_items:
                     continue
                 
                 # 累加得分
@@ -251,6 +252,7 @@ class UserCF:
         self.idx_to_user = {}
         self.user_history = defaultdict(set)
         self.item_users = defaultdict(set)  # 物品被哪些用户交互过
+        self.filter_history = True
     
     def fit(self, interactions: pd.DataFrame):
         """训练UserCF模型"""
@@ -334,7 +336,7 @@ class UserCF:
             similar_user_items = self.user_history[similar_user_id]
             
             for item_id in similar_user_items:
-                if item_id in user_items:
+                if self.filter_history and item_id in user_items:
                     continue
                 candidate_scores[item_id] += similarity
         

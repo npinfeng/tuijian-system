@@ -30,7 +30,7 @@ from src.recall.two_tower_model import TwoTowerModel
 from src.ranking.din_model import DIN
 
 # ── 召回模型评估函数 ────────────────────────────────
-def evaluate_recall_model(model, test_clicks: Dict[int, set], top_k: int = 50):
+def evaluate_recall_model(model, test_clicks: Dict[int, set], user_features_df: pd.DataFrame = None, top_k: int = 50):
     """
     评估单路召回模型指标
     """
@@ -44,10 +44,20 @@ def evaluate_recall_model(model, test_clicks: Dict[int, set], top_k: int = 50):
         try:
             # 兼容不同模型的接口
             if hasattr(model, 'recommend'):
-                recs = model.recommend(user_id, n=top_k)
+                # 特殊处理需要 user_features 的模型 (如 TwoTower)
+                if 'user_features' in model.recommend.__code__.co_varnames:
+                    u_feat = user_features_df.loc[user_id] if user_features_df is not None and user_id in user_features_df.index else None
+                    recs = model.recommend(user_id, n=top_k, user_features=u_feat)
+                else:
+                    recs = model.recommend(user_id, n=top_k)
             else:
                 continue
             
+            if not recs:
+                recalls.append(0)
+                total_users += 1
+                continue
+
             rec_ids = set([item[0] for item in recs])
             
             # 计算 Recall
@@ -56,7 +66,8 @@ def evaluate_recall_model(model, test_clicks: Dict[int, set], top_k: int = 50):
             if hit > 0:
                 hit_counts += 1
             total_users += 1
-        except:
+        except Exception as e:
+            # print(f"Error evaluating user {user_id}: {e}")
             continue
             
     return {
@@ -96,25 +107,71 @@ def main():
     # 2. 评估召回模型
     recall_results = {}
     
-    # --- ItemCF ---
-    if os.path.exists('models/itemcf_kuairand.pkl'):
-        model = ItemCF.load('models/itemcf_kuairand.pkl')
-        recall_results['ItemCF'] = evaluate_recall_model(model, test_clicks)
+    # 定义召回模型加载配置
+    recall_configs = [
+        ('ItemCF', 'models/itemcf_kuairand.pkl', ItemCF),
+        ('UserCF', 'models/usercf_kuairand.pkl', UserCF),
+        ('HotRecall', 'models/hot_kuairand.pkl', HotRecall),
+        ('NewItemRecall', 'models/new_kuairand.pkl', NewItemRecall),
+        ('FollowRecall', 'models/follow_kuairand.pkl', FollowRecall),
+    ]
+    
+    for name, path, cls in recall_configs:
+        if os.path.exists(path):
+            model = cls.load(path)
+            # 对于 CF 模型，评估时关闭历史过滤，以获得更真实的 Recall
+            if hasattr(model, 'filter_history'):
+                model.filter_history = False
+            recall_results[name] = evaluate_recall_model(model, test_clicks)
 
-    # --- UserCF ---
-    if os.path.exists('models/usercf_kuairand.pkl'):
-        model = UserCF.load('models/usercf_kuairand.pkl')
-        recall_results['UserCF'] = evaluate_recall_model(model, test_clicks)
-        
-    # --- HotRecall ---
-    if os.path.exists('models/hot_kuairand.pkl'):
-        model = HotRecall.load('models/hot_kuairand.pkl')
-        recall_results['HotRecall'] = evaluate_recall_model(model, test_clicks)
+    # --- DeepWalk ---
+    if os.path.exists('models/deepwalk_kuairand'):
+        try:
+            dw_m = DeepWalkModel.load('models/deepwalk_kuairand')
+            model = DeepWalkRecall(dw_m)
+            recall_results['DeepWalk'] = evaluate_recall_model(model, test_clicks)
+        except: pass
+    else:
+        print("  - 跳过 DeepWalk: 模型文件 models/deepwalk_kuairand 不存在")
 
-    # --- TwoTower (需要构造推荐索引，此处简单评估) ---
+    # --- MIND ---
+    if os.path.exists('models/mind_kuairand.model.pt'):
+        try:
+            from src.recall.mind_recall import MINDModel, MINDRecall
+            mind_m = MINDModel(num_items=NUM_VIDEOS, embedding_dim=64)
+            model = MINDRecall.load('models/mind_kuairand', mind_m)
+            recall_results['MIND'] = evaluate_recall_model(model, test_clicks)
+        except Exception as e:
+            print(f"  - MIND 评估失败: {e}")
+    else:
+        print("  - 跳过 MIND: 模型文件 models/mind_kuairand.model.pt 不存在")
+
+    # --- TwoTower ---
+    tt_path = 'models/two_tower_kuairand_best.pt'
+    if os.path.exists(tt_path):
+        try:
+            from src.recall.two_tower_model import TwoTowerModel, TwoTowerRecall
+            (u_cols, i_cols, _, _) = get_kuairand_feature_columns()
+            tt_model = TwoTowerModel(
+                user_feature_columns=u_cols,
+                item_feature_columns=i_cols,
+                embedding_dim=config['recall']['two_tower'].get('user_emb_dim', 64)
+            )
+            tt_model.load_state_dict(torch.load(tt_path, map_location=device))
+            model = TwoTowerRecall(tt_model, video_features)
+            recall_results['TwoTower'] = evaluate_recall_model(model, test_clicks, user_features_df=user_features)
+        except Exception as e:
+            print(f"  - TwoTower 评估失败: {e}")
+    else:
+        print(f"  - 跳过 TwoTower: 模型文件 {tt_path} 不存在")
+
     print("\n[召回评估结果]:")
+    print("-" * 60)
+    print(f"{'Model':15s} | {'Recall@50':10s} | {'HitRate@50':10s}")
+    print("-" * 60)
     for name, metrics in recall_results.items():
-        print(f"{name:10s} | Recall@50: {metrics['Recall@50']:.4f} | HitRate@50: {metrics['HitRate@50']:.4f}")
+        print(f"{name:15s} | {metrics['Recall@50']:.4f}     | {metrics['HitRate@50']:.4f}")
+    print("-" * 60)
 
     # 3. 评估精排模型 (DIN)
     print("\n" + "="*60)

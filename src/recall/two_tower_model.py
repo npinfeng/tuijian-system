@@ -7,7 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, List
+import pandas as pd
+from typing import Dict, List, Optional, Tuple
 from sklearn.metrics import roc_auc_score
 
 
@@ -312,3 +313,81 @@ class TwoTowerTrainer:
                 print(f"保存最佳模型，Val Loss: {val_loss:.4f}")
 
         print(f"\n训练完成！最佳Val Loss: {best_val_loss:.4f}")
+
+
+class TwoTowerRecall:
+    """
+    双塔模型召回器
+    使用训练好的双塔模型进行向量检索
+    """
+
+    def __init__(self, model: TwoTowerModel, item_features: pd.DataFrame):
+        """
+        Args:
+            model: 已加载权重的 TwoTowerModel
+            item_features: 包含所有 item 特征的 DataFrame
+        """
+        self.model = model
+        self.item_features = item_features
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.to(self.device)
+        self.model.eval()
+
+        self._item_ids = []
+        self._item_matrix = None
+        self._build_item_index()
+
+    def _build_item_index(self):
+        """预计算并保存所有物品的向量"""
+        print("开始构建双塔物品向量索引...")
+        self._item_ids = self.item_features['item_id'].tolist()
+        
+        # 准备物品特征输入
+        item_inputs = {}
+        for feat_col in self.model.item_feature_columns:
+            name = feat_col['name']
+            if name in self.item_features.columns:
+                if feat_col['type'] == 'categorical':
+                    item_inputs[name] = torch.tensor(self.item_features[name].values, dtype=torch.long).to(self.device)
+                else:
+                    item_inputs[name] = torch.tensor(self.item_features[name].values, dtype=torch.float32).to(self.device)
+        
+        # 批量计算物品向量
+        batch_size = 4096
+        item_vectors = []
+        
+        with torch.no_grad():
+            for i in range(0, len(self._item_ids), batch_size):
+                batch_inputs = {k: v[i:i+batch_size] for k, v in item_inputs.items()}
+                vectors = self.model.item_tower(batch_inputs)
+                item_vectors.append(vectors.cpu().numpy())
+        
+        self._item_matrix = np.vstack(item_vectors)
+        print(f"物品向量索引构建完成: {len(self._item_ids)} 个物品")
+
+    def recommend(self, user_id: int, n: int = 50, user_features: Optional[pd.Series] = None) -> List[Tuple[int, float]]:
+        """为特定用户推荐"""
+        if user_features is None:
+            return []
+
+        # 构造用户特征输入
+        user_inputs = {}
+        for feat_col in self.model.user_feature_columns:
+            name = feat_col['name']
+            if name == 'user_id':
+                user_inputs[name] = torch.tensor([user_id], dtype=torch.long).to(self.device)
+            elif name in user_features:
+                if feat_col['type'] == 'categorical':
+                    user_inputs[name] = torch.tensor([user_features[name]], dtype=torch.long).to(self.device)
+                else:
+                    user_inputs[name] = torch.tensor([user_features[name]], dtype=torch.float32).to(self.device)
+        
+        with torch.no_grad():
+            user_vector = self.model.user_tower(user_inputs).cpu().numpy() # (1, dim)
+        
+        # 计算余弦相似度（已归一化，直接内积）
+        scores = (self._item_matrix @ user_vector.T).flatten()
+        
+        # 排序并返回 top-n
+        top_indices = np.argsort(scores)[-n:][::-1]
+        return [(self._item_ids[idx], float(scores[idx])) for idx in top_indices]
