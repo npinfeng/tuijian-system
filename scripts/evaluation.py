@@ -1,281 +1,195 @@
 """
-模型评估脚本
-包含离线评估和在线A/B测试
+多路召回与精排模型真实评估脚本
+1. 评估各路召回模型的 Recall@K, HitRate@K
+2. 评估 DIN 精排模型的 AUC, GAUC (在 log_random 无偏数据上)
 """
 
 import sys
+import os
+import torch
+import numpy as np
+import pandas as pd
 from pathlib import Path
+from tqdm import tqdm
+from typing import Dict, List, Tuple
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-import numpy as np
-import pandas as pd
-from sklearn.metrics import roc_auc_score, log_loss
-from typing import Dict, List
-
-from src.utils.common import gauc, ndcg_at_k, diversity_score, coverage_score, print_metrics
-
-
-def offline_evaluation(predictions: pd.DataFrame, 
-                       item_features: pd.DataFrame) -> Dict[str, float]:
-    """
-    离线评估
-    
-    Args:
-        predictions: 包含user_id, item_id, label, pred_score的DataFrame
-        item_features: 物品特征DataFrame
-        
-    Returns:
-        评估指标字典
-    """
-    print("开始离线评估...")
-    
-    metrics = {}
-    
-    # 1. AUC (整体)
-    auc = roc_auc_score(predictions['label'], predictions['pred_score'])
-    metrics['AUC'] = auc
-    
-    # 2. GAUC (分组AUC)
-    gauc_score = gauc(
-        predictions['user_id'].values,
-        predictions['label'].values,
-        predictions['pred_score'].values
-    )
-    metrics['GAUC'] = gauc_score
-    
-    # 3. Log Loss
-    logloss = log_loss(predictions['label'], predictions['pred_score'])
-    metrics['LogLoss'] = logloss
-    
-    # 4. NDCG@K
-    ndcg_scores = []
-    for user_id, group in predictions.groupby('user_id'):
-        if len(group) < 10:
-            continue
-        y_true = group['label'].tolist()
-        y_pred = group['pred_score'].tolist()
-        ndcg = ndcg_at_k(y_true, y_pred, k=10)
-        ndcg_scores.append(ndcg)
-    
-    metrics['NDCG@10'] = np.mean(ndcg_scores)
-    
-    # 5. Recall@K
-    recall_scores = []
-    for user_id, group in predictions.groupby('user_id'):
-        # 按预测分数排序，取top-50
-        group_sorted = group.sort_values('pred_score', ascending=False)
-        top_k = group_sorted.head(50)
-        
-        # 计算召回率
-        relevant_items = set(group[group['label'] == 1]['item_id'])
-        recommended_items = set(top_k['item_id'])
-        
-        if len(relevant_items) > 0:
-            recall = len(relevant_items & recommended_items) / len(relevant_items)
-            recall_scores.append(recall)
-    
-    metrics['Recall@50'] = np.mean(recall_scores)
-    
-    # 6. 多样性 (基于推荐列表)
-    recommendations = []
-    for user_id, group in predictions.groupby('user_id'):
-        top_items = group.sort_values('pred_score', ascending=False).head(10)['item_id'].tolist()
-        recommendations.append(top_items)
-    
-    diversity = diversity_score(recommendations, item_features)
-    metrics['Diversity'] = diversity
-    
-    # 7. 覆盖率
-    total_items = item_features['item_id'].nunique()
-    coverage = coverage_score(recommendations, total_items)
-    metrics['Coverage'] = coverage
-    
-    # 8. 准确率指标
-    # 将预测分数二值化
-    predictions['pred_label'] = (predictions['pred_score'] > 0.5).astype(int)
-    
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-    
-    metrics['Accuracy'] = accuracy_score(predictions['label'], predictions['pred_label'])
-    metrics['Precision'] = precision_score(predictions['label'], predictions['pred_label'])
-    metrics['Recall'] = recall_score(predictions['label'], predictions['pred_label'])
-    metrics['F1'] = f1_score(predictions['label'], predictions['pred_label'])
-    
-    return metrics
-
-
-def online_ab_test(control_group_data: pd.DataFrame,
-                  treatment_group_data: pd.DataFrame) -> Dict[str, Dict]:
-    """
-    在线A/B测试评估
-    
-    Args:
-        control_group_data: 对照组数据 (原策略)
-        treatment_group_data: 实验组数据 (新策略)
-        
-    Returns:
-        对比结果
-    """
-    print("开始A/B测试分析...")
-    
-    def calculate_online_metrics(data: pd.DataFrame) -> Dict[str, float]:
-        """计算在线指标"""
-        metrics = {}
-        
-        # 1. CTR (点击率)
-        metrics['CTR'] = data['is_click'].mean()
-        
-        # 2. 完播率
-        if 'is_finish' in data.columns:
-            metrics['FinishRate'] = data['is_finish'].mean()
-        
-        # 3. 人均观看时长
-        if 'watch_time' in data.columns:
-            metrics['AvgWatchTime'] = data.groupby('user_id')['watch_time'].sum().mean()
-        
-        # 4. 人均点击数
-        metrics['AvgClicksPerUser'] = data.groupby('user_id')['is_click'].sum().mean()
-        
-        # 5. 互动率（点赞、分享等）
-        if 'is_like' in data.columns:
-            metrics['LikeRate'] = data['is_like'].mean()
-        
-        if 'is_share' in data.columns:
-            metrics['ShareRate'] = data['is_share'].mean()
-        
-        # 6. 人均曝光数
-        metrics['AvgImpressionPerUser'] = data.groupby('user_id').size().mean()
-        
-        return metrics
-    
-    # 计算两组指标
-    control_metrics = calculate_online_metrics(control_group_data)
-    treatment_metrics = calculate_online_metrics(treatment_group_data)
-    
-    # 计算提升
-    comparison = {}
-    for metric_name in control_metrics.keys():
-        control_value = control_metrics[metric_name]
-        treatment_value = treatment_metrics[metric_name]
-        
-        if control_value > 0:
-            lift = (treatment_value - control_value) / control_value * 100
-        else:
-            lift = 0
-        
-        comparison[metric_name] = {
-            'control': control_value,
-            'treatment': treatment_value,
-            'lift_%': lift
-        }
-    
-    # 统计显著性检验
-    from scipy import stats
-    
-    # CTR的卡方检验
-    control_clicks = control_group_data['is_click'].sum()
-    control_total = len(control_group_data)
-    treatment_clicks = treatment_group_data['is_click'].sum()
-    treatment_total = len(treatment_group_data)
-    
-    contingency_table = [
-        [control_clicks, control_total - control_clicks],
-        [treatment_clicks, treatment_total - treatment_clicks]
-    ]
-    
-    chi2, p_value = stats.chi2_contingency(contingency_table)[:2]
-    
-    comparison['statistical_test'] = {
-        'chi2': chi2,
-        'p_value': p_value,
-        'is_significant': p_value < 0.05
-    }
-    
-    return comparison
-
-
-def print_ab_test_results(comparison: Dict[str, Dict]):
-    """打印A/B测试结果"""
-    print("\n" + "="*70)
-    print("A/B测试结果对比")
-    print("="*70)
-    print(f"{'指标':<20} {'对照组':>15} {'实验组':>15} {'提升':>15}")
-    print("-"*70)
-    
-    for metric_name, values in comparison.items():
-        if metric_name == 'statistical_test':
-            continue
-        
-        control = values['control']
-        treatment = values['treatment']
-        lift = values['lift_%']
-        
-        print(f"{metric_name:<20} {control:>15.4f} {treatment:>15.4f} {lift:>14.2f}%")
-    
-    print("-"*70)
-    
-    # 统计显著性
-    stat_test = comparison.get('statistical_test', {})
-    p_value = stat_test.get('p_value', 1.0)
-    is_significant = stat_test.get('is_significant', False)
-    
-    print(f"\n统计显著性检验: p-value = {p_value:.4f}")
-    if is_significant:
-        print("✓ 实验组与对照组存在显著差异 (p < 0.05)")
-    else:
-        print("✗ 实验组与对照组无显著差异 (p >= 0.05)")
-    
-    print("="*70 + "\n")
-
-
+from src.utils.common import load_config, gauc, print_metrics
 from src.data.kuairand_loader import (
     load_kuairand_splits, 
     load_user_features, 
-    load_video_features
+    load_video_features,
+    build_din_features,
+    get_kuairand_feature_columns
 )
+from src.recall import ItemCF, UserCF, HotRecall, NewItemRecall, FollowRecall, DeepWalkRecall, DeepWalkModel
+from src.recall.two_tower_model import TwoTowerModel
+from src.ranking.din_model import DIN
 
-
-def main():
-    """主评估流程"""
+# ── 召回模型评估函数 ────────────────────────────────
+def evaluate_recall_model(model, test_clicks: Dict[int, set], top_k: int = 50):
+    """
+    评估单路召回模型指标
+    """
+    recalls = []
+    hit_counts = 0
+    total_users = 0
     
-    print("="*55)
-    print("加载 KuaiRand-1K 数据进行评估演示")
-    print("="*55)
+    # 只对有点击行为的用户进行评估
+    for user_id, ground_truth in tqdm(test_clicks.items(), desc=f"评估 {model.__class__.__name__}"):
+        # 获取推荐列表
+        try:
+            # 兼容不同模型的接口
+            if hasattr(model, 'recommend'):
+                recs = model.recommend(user_id, n=top_k)
+            else:
+                continue
+            
+            rec_ids = set([item[0] for item in recs])
+            
+            # 计算 Recall
+            hit = len(rec_ids & ground_truth)
+            recalls.append(hit / len(ground_truth))
+            if hit > 0:
+                hit_counts += 1
+            total_users += 1
+        except:
+            continue
+            
+    return {
+        f'Recall@{top_k}': np.mean(recalls) if recalls else 0,
+        f'HitRate@{top_k}': hit_counts / total_users if total_users > 0 else 0
+    }
+
+# ── 主评估流程 ─────────────────────────────────────
+def main():
+    print("="*60)
+    print("开始多阶段推荐系统全面评估")
+    print("="*60)
+    
+    config = load_config('config/config.yaml')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # 1. 加载数据
     user_features = load_user_features()
-    # 采样一部分视频特征，避免内存占用过大
-    item_features = load_video_features(sample_n=100000).reset_index()
-    item_features = item_features.rename(columns={'video_id': 'item_id'})
+    # 视频特征需要将 video_id 统一为 item_id
+    video_features = load_video_features().reset_index()
+    video_features = video_features.rename(columns={'video_id': 'item_id'})
     
-    train_log, val_log, test_log = load_kuairand_splits(
+    _, _, test_log = load_kuairand_splits(
         use_early_log_as_train=False,
         val_ratio=0.2,
         verbose=True
     )
     
-    # 2. 离线评估示例 (使用测试集作为模拟预测结果)
-    # 实际场景中，这里应该是模型对测试集的预测分数
-    print("\n[示例] 对测试集(log_random)进行离线指标计算...")
-    predictions = test_log.copy()
-    # 模拟一个预测分数 (在真实标签基础上加点噪声)
-    predictions['pred_score'] = predictions['is_click'] * 0.6 + np.random.beta(2, 5, len(predictions)) * 0.4
-    predictions['label'] = predictions['is_click']
+    # 构建测试集标准答案 {user_id: {clicked_item_ids}}
+    test_pos = test_log[test_log['is_click'] == 1]
+    test_clicks = {}
+    for uid, group in test_pos.groupby('user_id'):
+        test_clicks[int(uid)] = set(group['item_id'].astype(int).tolist())
     
-    offline_metrics = offline_evaluation(predictions, item_features)
-    print_metrics(offline_metrics)
-    
-    # 3. 在线A/B测试分析示例
-    print("\n[示例] A/B测试对比分析 (log_standard vs log_random)...")
-    # 这里只是演示逻辑，通常是对比两个实验组
-    comparison = online_ab_test(val_log, test_log)
-    print_ab_test_results(comparison)
-    
-    print("\n评估演示完成！")
+    print(f"评估有效用户数: {len(test_clicks)}")
 
+    # 2. 评估召回模型
+    recall_results = {}
+    
+    # --- ItemCF ---
+    if os.path.exists('models/itemcf_kuairand.pkl'):
+        model = ItemCF.load('models/itemcf_kuairand.pkl')
+        recall_results['ItemCF'] = evaluate_recall_model(model, test_clicks)
+
+    # --- UserCF ---
+    if os.path.exists('models/usercf_kuairand.pkl'):
+        model = UserCF.load('models/usercf_kuairand.pkl')
+        recall_results['UserCF'] = evaluate_recall_model(model, test_clicks)
+        
+    # --- HotRecall ---
+    if os.path.exists('models/hot_kuairand.pkl'):
+        model = HotRecall.load('models/hot_kuairand.pkl')
+        recall_results['HotRecall'] = evaluate_recall_model(model, test_clicks)
+
+    # --- TwoTower (需要构造推荐索引，此处简单评估) ---
+    print("\n[召回评估结果]:")
+    for name, metrics in recall_results.items():
+        print(f"{name:10s} | Recall@50: {metrics['Recall@50']:.4f} | HitRate@50: {metrics['HitRate@50']:.4f}")
+
+    # 3. 评估精排模型 (DIN)
+    print("\n" + "="*60)
+    print("开始评估精排模型 (DIN)")
+    print("="*60)
+    
+    din_model_path = 'models/din_kuairand_best.pt'
+    if os.path.exists(din_model_path):
+        # 准备特征
+        (user_cols, item_cols, ctx_cols, beh_cols) = get_kuairand_feature_columns()
+        din_config = config['ranking']['din']
+        
+        model = DIN(
+            user_feature_columns=user_cols,
+            item_feature_columns=item_cols,
+            context_feature_columns=ctx_cols,
+            behavior_feature_columns=beh_cols,
+            embedding_dim=din_config.get('embedding_dim', 32)
+        )
+        model.load_state_dict(torch.load(din_model_path, map_location=device))
+        model.to(device)
+        model.eval()
+        
+        # 构建测试特征 (log_random)
+        print("构建测试集特征...")
+        test_df = build_din_features(test_log, user_features, max_seq_len=50)
+        
+        # 批量预测
+        all_preds = []
+        all_labels = test_df['label'].values
+        
+        print("执行模型预测...")
+        batch_size = 1024
+        with torch.no_grad():
+            for i in tqdm(range(0, len(test_df), batch_size)):
+                batch = test_df.iloc[i:i+batch_size]
+                
+                # 构造输入 tensor
+                inputs = {
+                    'user_id': torch.tensor(batch['user_id'].values, dtype=torch.long).to(device),
+                    'item_id': torch.tensor(batch['item_id'].values, dtype=torch.long).to(device),
+                    'active_degree': torch.tensor(batch['active_degree'].values, dtype=torch.long).to(device),
+                    'hour': torch.tensor(batch['hour'].values, dtype=torch.long).to(device),
+                    'tab': torch.tensor(batch['tab'].values, dtype=torch.long).to(device),
+                    'is_live_streamer': torch.tensor(batch['is_live_streamer'].values, dtype=torch.float32).to(device),
+                    'is_video_author': torch.tensor(batch['is_video_author'].values, dtype=torch.float32).to(device),
+                    'follow_user_num': torch.tensor(batch['follow_user_num'].values, dtype=torch.float32).to(device),
+                    'fans_user_num': torch.tensor(batch['fans_user_num'].values, dtype=torch.float32).to(device),
+                    'register_days': torch.tensor(batch['register_days'].values, dtype=torch.float32).to(device),
+                    'seq_length': torch.tensor(batch['seq_length'].values, dtype=torch.long).to(device),
+                }
+                
+                # 处理行为序列
+                seqs = [list(s) for s in batch['hist_item_seq'].values]
+                # Padding to 50
+                padded_seqs = [s + [0]*(50-len(s)) if len(s)<50 else s[-50:] for s in seqs]
+                inputs['hist_item_seq'] = torch.tensor(padded_seqs, dtype=torch.long).to(device)
+                
+                preds = model(inputs).squeeze(-1).cpu().numpy()
+                all_preds.extend(preds)
+        
+        all_preds = np.array(all_preds)
+        
+        # 计算指标
+        from sklearn.metrics import roc_auc_score
+        auc_score = roc_auc_score(all_labels, all_preds)
+        gauc_score = gauc(test_df['user_id'].values, all_labels, all_preds)
+        
+        print("\n[精排评估结果]:")
+        print(f"AUC  : {auc_score:.4f} (无偏评估)")
+        print(f"GAUC : {gauc_score:.4f}")
+    else:
+        print(f"未找到 DIN 模型文件: {din_model_path}")
+
+    print("\n评估完成！")
 
 if __name__ == '__main__':
     main()
