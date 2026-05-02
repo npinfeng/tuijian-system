@@ -103,14 +103,27 @@ def main():
     
     # ── 7. 双塔召回 (TwoTower) ──────────────────────────
     print("\n[7/7] 训练 TwoTower...")
-    # 简化的特征列
+    # 从 config 读取双塔超参
+    tt_cfg = config.get('recall', {}).get('two_tower', {})
+    tt_epochs      = tt_cfg.get('epochs', 5)
+    tt_batch_size  = tt_cfg.get('batch_size', 1024)
+    tt_lr          = tt_cfg.get('learning_rate', 0.001)
+    tt_emb_dim     = tt_cfg.get('user_emb_dim', 64)
+    tt_train_rows  = tt_cfg.get('max_train_rows', 200000)
+
     user_cols = [{'name': 'user_id', 'type': 'categorical', 'vocab_size': NUM_USERS}]
     item_cols = [{'name': 'item_id', 'type': 'categorical', 'vocab_size': NUM_VIDEOS}]
-    
-    tt_model = TwoTowerModel(user_feature_columns=user_cols, item_feature_columns=item_cols, embedding_dim=32)
-    tt_trainer = TwoTowerTrainer(tt_model, config={'learning_rate': 0.001})
-    
-    # 准备 DataLoader (简化版)
+
+    tt_model = TwoTowerModel(
+        user_feature_columns=user_cols,
+        item_feature_columns=item_cols,
+        embedding_dim=tt_emb_dim,
+    )
+    tt_trainer = TwoTowerTrainer(tt_model, config={
+        'learning_rate': tt_lr,
+    })
+
+    # 准备 DataLoader
     class TTDataset(torch.utils.data.Dataset):
         def __init__(self, df):
             self.u = df['user_id'].values
@@ -119,9 +132,21 @@ def main():
         def __getitem__(self, idx):
             return {'user_id': torch.tensor(self.u[idx], dtype=torch.long),
                     'item_id': torch.tensor(self.i[idx], dtype=torch.long)}
-    
-    tt_loader = torch.utils.data.DataLoader(TTDataset(pos_train_log.head(100000)), batch_size=1024, shuffle=True)
-    tt_trainer.train(tt_loader, tt_loader, epochs=1, save_path='models/two_tower_kuairand')
+
+    # 正样本：训练集点击 & 验证集点击
+    pos_val_log = val_log[val_log['is_click'] == 1].copy()
+    tt_train_loader = torch.utils.data.DataLoader(
+        TTDataset(pos_train_log.head(tt_train_rows)),
+        batch_size=tt_batch_size, shuffle=True
+    )
+    tt_val_loader = torch.utils.data.DataLoader(
+        TTDataset(pos_val_log),
+        batch_size=tt_batch_size, shuffle=False
+    )
+    print(f"双塔训练集: {min(len(pos_train_log), tt_train_rows):,} 条  "
+          f"验证集: {len(pos_val_log):,} 条  epochs={tt_epochs}")
+    tt_trainer.train(tt_train_loader, tt_val_loader, epochs=tt_epochs,
+                     save_path='models/two_tower_kuairand')
     
     print("\n" + "=" * 60)
     print("所有路召回模型训练完成！")
