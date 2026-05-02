@@ -41,10 +41,7 @@ data/processed/
 *.hdf5
 
 # Models
-models/*.h5
-models/*.pb
-models/*.ckpt
-models/*.pth
+models/
 *.bin
 
 # Logs

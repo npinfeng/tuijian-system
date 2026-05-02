@@ -56,7 +56,7 @@ class HotRecall:
         训练热门模型（离线计算热度分）
         Args:
             interactions: 交互记录，需含 item_id, is_click, is_finish, is_like, is_share, timestamp
-            items: 物品信息表，需含 item_id, category, publish_time
+            items: 物品信息表，需含 video_id（或 item_id）, category, publish_time
             window_days: 统计窗口（天）
         """
         print("计算热门物品热度分...")
@@ -108,8 +108,10 @@ class HotRecall:
 
         # 构建物品元信息
         if items is not None:
+            # 兼容 KuaiRand video_id 字段（reset_index 后列名为 video_id）
+            id_col = 'video_id' if 'video_id' in items.columns else 'item_id'
             for _, row in items.iterrows():
-                self.item_info[int(row['item_id'])] = row.to_dict()
+                self.item_info[int(row[id_col])] = row.to_dict()
 
         # 计算时效衰减并得到最终热度
         hot_list = []
@@ -220,12 +222,15 @@ class NewItemRecall:
         """
         扫描新发布物品
         Args:
-            items: 物品信息表，需含 item_id, publish_time, category
+            items: 物品信息表，需含 video_id（或 item_id）, publish_time, category
             interactions: 交互记录（用于统计各物品曝光次数）
         """
         print("扫描新发布物品...")
         current_time = datetime.now()
         threshold = current_time - timedelta(hours=self.new_threshold_hours)
+
+        # 兼容 KuaiRand video_id 字段（reset_index 后列名为 video_id）
+        id_col = 'video_id' if 'video_id' in items.columns else 'item_id'
 
         # 过滤新物品
         self.new_items = []
@@ -244,7 +249,7 @@ class NewItemRecall:
 
             if publish_time >= threshold:
                 self.new_items.append({
-                    'item_id': int(row['item_id']),
+                    'item_id': int(row[id_col]),
                     'publish_time': publish_time,
                     'category': row.get('category', 'unknown'),
                     'author_id': row.get('author_id', None),
