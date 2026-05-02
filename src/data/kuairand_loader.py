@@ -47,7 +47,7 @@ KUAIRAND_DATA_DIR = get_default_data_dir()
 
 NUM_USERS  = 1000        # user_id: 0~999
 NUM_VIDEOS = 4371900     # video_id: 0~4371899  (max_id + 1，用于 Embedding vocab_size)
-NUM_TABS   = 8           # tab 值域 0~7
+NUM_TABS   = 15          # tab 值域 0~14
 NUM_HOURS  = 24          # 小时 0~23
 
 # 用户活跃度标签映射
