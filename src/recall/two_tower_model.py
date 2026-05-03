@@ -80,6 +80,7 @@ class TwoTowerModel(nn.Module):
             else:
                 user_input_dim += 16
 
+        self.user_emb_dropout = nn.Dropout(dropout_rate)
         # User Tower的DNN层
         user_dnn_layers = []
         in_dim = user_input_dim
@@ -105,6 +106,7 @@ class TwoTowerModel(nn.Module):
             else:
                 item_input_dim += 16
 
+        self.item_emb_dropout = nn.Dropout(dropout_rate)
         # Item Tower的DNN层
         item_dnn_layers = []
         in_dim = item_input_dim
@@ -151,6 +153,7 @@ class TwoTowerModel(nn.Module):
 
         # 拼接所有特征
         user_features = torch.cat(user_embeddings, dim=-1)
+        user_features = self.user_emb_dropout(user_features)
 
         # 通过DNN
         user_features = self.user_dnn(user_features)
@@ -184,6 +187,7 @@ class TwoTowerModel(nn.Module):
 
         # 拼接所有特征
         item_features = torch.cat(item_embeddings, dim=-1)
+        item_features = self.item_emb_dropout(item_features)
 
         # 通过DNN
         item_features = self.item_dnn(item_features)
@@ -256,8 +260,8 @@ class TwoTowerTrainer:
         # 计算所有user-item对的相似度矩阵（余弦相似度）
         similarity_matrix = torch.mm(user_vectors, item_vectors.t())  # (batch, batch)
         
-        # 动态可学习温度缩放 (限制最大值以防数值不稳定)
-        logit_scale = self.model.logit_scale.exp().clamp(max=100.0)
+        # 动态可学习温度缩放 (限制最大值 20.0，对应最小温度 0.05，防止过度自信导致验证集 Loss 爆炸)
+        logit_scale = self.model.logit_scale.exp().clamp(max=20.0)
         similarity_matrix = similarity_matrix * logit_scale
 
         batch_size = user_vectors.size(0)
