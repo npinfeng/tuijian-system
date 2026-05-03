@@ -89,6 +89,7 @@ class TwoTowerModel(nn.Module):
             in_dim = units
         self.user_dnn = nn.Sequential(*user_dnn_layers)
         self.user_output_layer = nn.Linear(in_dim, output_dim)
+        self.user_ln = nn.LayerNorm(output_dim)
 
         self.item_num_projs = nn.ModuleDict()
         for feat_col in item_feature_columns:
@@ -113,6 +114,7 @@ class TwoTowerModel(nn.Module):
             in_dim = units
         self.item_dnn = nn.Sequential(*item_dnn_layers)
         self.item_output_layer = nn.Linear(in_dim, output_dim)
+        self.item_ln = nn.LayerNorm(output_dim)
 
         # 初始化参数
         self._init_weights()
@@ -153,6 +155,8 @@ class TwoTowerModel(nn.Module):
 
         # 输出层 (移除 L2 归一化，改用纯内积，释放梯度)
         user_vector = self.user_output_layer(user_features)
+        # 加入 LayerNorm 限制方差，防止向量模长在训练后期爆炸导致的过拟合
+        user_vector = self.user_ln(user_vector)
 
         return user_vector
 
@@ -182,6 +186,8 @@ class TwoTowerModel(nn.Module):
 
         # 输出层 (移除 L2 归一化)
         item_vector = self.item_output_layer(item_features)
+        # 加入 LayerNorm 限制方差
+        item_vector = self.item_ln(item_vector)
 
         return item_vector
 
