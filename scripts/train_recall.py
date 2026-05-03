@@ -124,6 +124,8 @@ def main():
     )
     tt_trainer = TwoTowerTrainer(tt_model, config={
         'learning_rate': tt_lr,
+        'temperature': tt_cfg.get('temperature', 0.1),
+        'weight_decay': tt_cfg.get('weight_decay', 1e-5),
     })
 
     # 准备 DataLoader
@@ -149,7 +151,8 @@ def main():
     print(f"双塔训练集: {min(len(pos_train_log), tt_train_rows):,} 条  "
           f"验证集: {len(pos_val_log):,} 条  epochs={tt_epochs}")
     tt_trainer.train(tt_train_loader, tt_val_loader, epochs=tt_epochs,
-                     save_path='models/two_tower_kuairand')
+                     save_path='models/two_tower_kuairand',
+                     patience=tt_cfg.get('patience', 3))
     
     print("\n" + "=" * 60)
     print("所有路召回模型训练完成！")

@@ -198,14 +198,16 @@ class TwoTowerTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
 
-        # 优化器
+        # 优化器 (加入 L2 正则化防止过拟合)
         self.optimizer = torch.optim.Adam(
             model.parameters(),
-            lr=config.get('learning_rate', 0.001)
+            lr=config.get('learning_rate', 0.001),
+            weight_decay=config.get('weight_decay', 1e-5)
         )
 
-        # 使用对比学习损失
-        self.temperature = config.get('temperature', 0.05)
+        # 温度系数：控制 softmax 的锐度
+        # 过小会导致梯度爆炸，模型卡在 ln(batch_size)；推荐 0.07~0.2
+        self.temperature = config.get('temperature', 0.1)
 
     def contrastive_loss(self,
                          user_vectors: torch.Tensor,
@@ -252,6 +254,8 @@ class TwoTowerTrainer:
         loss = self.contrastive_loss(user_vectors, item_vectors)
 
         loss.backward()
+        # 梯度裁剪，防止梯度爆炸导致 loss 无法下降
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         return loss.item()
@@ -310,13 +314,22 @@ class TwoTowerTrainer:
 
             train_loss = total_train_loss / max(n_train_batches, 1)
             val_loss = total_val_loss / max(n_val_batches, 1)
-            print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-            # 保存最佳模型
+            print(f"\nTrain Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+
+            # 保存最佳模型并检查早停
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                no_improve_epochs = 0
                 torch.save(self.model.state_dict(), f"{save_path}_best.pt")
                 print(f"保存最佳模型，Val Loss: {val_loss:.4f}")
+            else:
+                no_improve_epochs += 1
+                print(f"验证集性能未提升 ({no_improve_epochs}/{patience})")
+
+            if no_improve_epochs >= patience:
+                print(f"触发早停！在第 {epoch + 1} 轮停止训练。")
+                break
 
         print(f"\n训练完成！最佳Val Loss: {best_val_loss:.4f}")
 
