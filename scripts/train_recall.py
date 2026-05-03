@@ -118,6 +118,9 @@ def main():
         user_feature_columns=user_cols,
         item_feature_columns=item_cols,
         embedding_dim=tt_emb_dim,
+        user_hidden_units=tt_cfg.get('hidden_units', [128, 64]),
+        item_hidden_units=tt_cfg.get('hidden_units', [128, 64]),
+        dropout_rate=tt_cfg.get('dropout', 0.2)
     )
     tt_trainer = TwoTowerTrainer(tt_model, config={
         'learning_rate': tt_lr,

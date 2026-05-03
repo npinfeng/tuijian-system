@@ -41,12 +41,13 @@ recall:
   
   # 双塔模型配置
   two_tower:
-    user_emb_dim: 128
-    item_emb_dim: 128
-    hidden_units: [256, 128, 64]
+    user_emb_dim: 32
+    item_emb_dim: 32
+    hidden_units: [128, 64]
     batch_size: 1024
-    learning_rate: 0.001
-    epochs: 20
+    learning_rate: 0.0005
+    epochs: 10
+    dropout: 0.3
   
   # MIND多兴趣配置
   mind:

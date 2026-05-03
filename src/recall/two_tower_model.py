@@ -260,14 +260,21 @@ class TwoTowerTrainer:
               train_dataloader,
               val_dataloader,
               epochs: int = 10,
-              save_path: str = "models/two_tower"):
-        """训练模型"""
+              save_path: str = "models/two_tower",
+              patience: int = 3):
+        """
+        训练模型
+        Args:
+            patience: 容忍验证集 Loss 不下降的轮数
+        """
         best_val_loss = float('inf')
+        no_improve_epochs = 0
 
         for epoch in range(epochs):
             print(f"\nEpoch {epoch + 1}/{epochs}")
 
-            # 训练
+            # 训练阶段
+            self.model.train()
             total_train_loss = 0.0
             n_train_batches = 0
 
@@ -280,7 +287,7 @@ class TwoTowerTrainer:
                     avg_loss = total_train_loss / n_train_batches
                     print(f"Batch {batch_idx}, Loss: {avg_loss:.4f}")
 
-            # 验证
+            # 验证阶段
             self.model.eval()
             total_val_loss = 0.0
             n_val_batches = 0
@@ -297,11 +304,10 @@ class TwoTowerTrainer:
                     user_vectors = self.model.user_tower(user_inputs)
                     item_vectors = self.model.item_tower(item_inputs)
                     loss = self.contrastive_loss(user_vectors, item_vectors)
-
+                    
                     total_val_loss += loss.item()
                     n_val_batches += 1
 
-            # 打印结果
             train_loss = total_train_loss / max(n_train_batches, 1)
             val_loss = total_val_loss / max(n_val_batches, 1)
             print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
