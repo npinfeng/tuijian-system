@@ -71,7 +71,14 @@ def main():
     model_path = 'models/deepfm_experiment_best.pt'
     if os.path.exists(model_path):
         (u_cols, i_cols, c_cols, _) = get_kuairand_feature_columns()
-        model = DeepFM(user_feature_columns=u_cols, item_feature_columns=i_cols, context_feature_columns=c_cols)
+        dfm_config = config['ranking']['deepfm']
+        model = DeepFM(
+            user_feature_columns=u_cols, 
+            item_feature_columns=i_cols, 
+            context_feature_columns=c_cols,
+            embedding_dim=dfm_config.get('embedding_dim', 16),
+            dnn_hidden_units=dfm_config.get('dnn_hidden_units', [256, 128, 64])
+        )
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.to(device).eval()
         
