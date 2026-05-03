@@ -27,7 +27,8 @@ class TwoTowerModel(nn.Module):
                  user_hidden_units: List[int] = [256, 128, 64],
                  item_hidden_units: List[int] = [256, 128, 64],
                  output_dim: int = 64,
-                 dropout_rate: float = 0.2):
+                 dropout_rate: float = 0.2,
+                 temperature: float = 0.07):
         """
         Args:
             user_feature_columns: 用户特征配置
@@ -44,6 +45,7 @@ class TwoTowerModel(nn.Module):
         self.item_feature_columns = item_feature_columns
         self.embedding_dim = embedding_dim
         self.output_dim = output_dim
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / temperature))
 
         # User Tower的Embedding层
         self.user_embedding_layers = nn.ModuleDict()
@@ -83,13 +85,12 @@ class TwoTowerModel(nn.Module):
         in_dim = user_input_dim
         for units in user_hidden_units:
             user_dnn_layers.append(nn.Linear(in_dim, units))
+            user_dnn_layers.append(nn.LayerNorm(units))
             user_dnn_layers.append(nn.LeakyReLU(0.2)) # 改用 LeakyReLU 防止神经元坏死
-            # 移除 BatchNorm1d，在双塔对比学习中 BN 容易造成信息泄露或训练波动
             user_dnn_layers.append(nn.Dropout(dropout_rate))
             in_dim = units
         self.user_dnn = nn.Sequential(*user_dnn_layers)
         self.user_output_layer = nn.Linear(in_dim, output_dim)
-        self.user_ln = nn.LayerNorm(output_dim)
 
         self.item_num_projs = nn.ModuleDict()
         for feat_col in item_feature_columns:
@@ -109,12 +110,12 @@ class TwoTowerModel(nn.Module):
         in_dim = item_input_dim
         for units in item_hidden_units:
             item_dnn_layers.append(nn.Linear(in_dim, units))
+            item_dnn_layers.append(nn.LayerNorm(units))
             item_dnn_layers.append(nn.LeakyReLU(0.2))
             item_dnn_layers.append(nn.Dropout(dropout_rate))
             in_dim = units
         self.item_dnn = nn.Sequential(*item_dnn_layers)
         self.item_output_layer = nn.Linear(in_dim, output_dim)
-        self.item_ln = nn.LayerNorm(output_dim)
 
         # 初始化参数
         self._init_weights()
@@ -145,6 +146,7 @@ class TwoTowerModel(nn.Module):
                 user_embeddings.append(emb)
             else:  # numerical
                 val = inputs[feat_col['name']].unsqueeze(-1)
+                val = torch.log1p(torch.relu(val))
                 user_embeddings.append(self.user_num_projs[feat_col['name']](val))
 
         # 拼接所有特征
@@ -153,10 +155,11 @@ class TwoTowerModel(nn.Module):
         # 通过DNN
         user_features = self.user_dnn(user_features)
 
-        # 输出层 (移除 L2 归一化，改用纯内积，释放梯度)
+        # 输出层
         user_vector = self.user_output_layer(user_features)
-        # 加入 LayerNorm 限制方差，防止向量模长在训练后期爆炸导致的过拟合
-        user_vector = self.user_ln(user_vector)
+
+        # L2归一化，使得输出处于单位超球面上（标准双塔）
+        user_vector = F.normalize(user_vector, p=2, dim=1)
 
         return user_vector
 
@@ -176,6 +179,7 @@ class TwoTowerModel(nn.Module):
                 item_embeddings.append(emb)
             else:  # numerical
                 val = inputs[feat_col['name']].unsqueeze(-1)
+                val = torch.log1p(torch.relu(val))
                 item_embeddings.append(self.item_num_projs[feat_col['name']](val))
 
         # 拼接所有特征
@@ -184,10 +188,11 @@ class TwoTowerModel(nn.Module):
         # 通过DNN
         item_features = self.item_dnn(item_features)
 
-        # 输出层 (移除 L2 归一化)
+        # 输出层
         item_vector = self.item_output_layer(item_features)
-        # 加入 LayerNorm 限制方差
-        item_vector = self.item_ln(item_vector)
+
+        # L2归一化，使得输出处于单位超球面上（标准双塔）
+        item_vector = F.normalize(item_vector, p=2, dim=1)
 
         return item_vector
 
@@ -224,11 +229,14 @@ class TwoTowerTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
 
+        # 移除固定温度，改用模型内可学习的 logit_scale
+        # self.temperature = config.get('temperature', 0.1)
+
         # 优化器
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=config.get('learning_rate', 0.001),
-            weight_decay=config.get('weight_decay', 1e-5)
+            weight_decay=config.get('weight_decay', 1e-4)
         )
         
         # 学习率调度器：余弦退火，有助于后期收敛
@@ -239,26 +247,37 @@ class TwoTowerTrainer:
     def contrastive_loss(self,
                          user_vectors: torch.Tensor,
                          item_vectors: torch.Tensor,
-                         item_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+                         item_ids: Optional[torch.Tensor] = None,
+                         user_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         对比学习损失 (InfoNCE Loss)
-        item_ids: 用于处理 batch 内的 False Negatives (多个用户点击了同一个视频)
+        item_ids, user_ids: 用于处理 batch 内的 False Negatives (同一用户多次点击，或同一视频被多次点击)
         """
-        # 计算所有user-item对的相似度矩阵（纯内积，无需温度缩放）
+        # 计算所有user-item对的相似度矩阵（余弦相似度）
         similarity_matrix = torch.mm(user_vectors, item_vectors.t())  # (batch, batch)
+        
+        # 动态可学习温度缩放 (限制最大值以防数值不稳定)
+        logit_scale = self.model.logit_scale.exp().clamp(max=100.0)
+        similarity_matrix = similarity_matrix * logit_scale
 
         batch_size = user_vectors.size(0)
         labels = torch.arange(batch_size, device=user_vectors.device)
 
-        # 处理 False Negatives：如果 batch 内有相同的 item_id，将对应的负样本位置 Mask 掉
+        # 处理 False Negatives
+        diag_mask = torch.eye(batch_size, device=user_vectors.device).bool()
+        
+        # 1. 如果 batch 内有相同的 item_id，则对 user->item 的 Softmax 来说这些 item 不该是负样本
         if item_ids is not None:
-            # 找到 item_id 相同的位置 (batch, batch)
-            # mask[i, j] = True 表示 i-user 和 j-item 实际上是同一种匹配，不应作为负样本
-            mask = (item_ids.unsqueeze(0) == item_ids.unsqueeze(1))
-            # 将这些位置的相似度减去一个大值，使其在 softmax 中失效（忽略对角线，对角线是正样本）
-            diag_mask = torch.eye(batch_size, device=user_vectors.device).bool()
-            mask = mask & (~diag_mask)
-            similarity_matrix = similarity_matrix.masked_fill(mask, -1e9)
+            i_mask = (item_ids.unsqueeze(0) == item_ids.unsqueeze(1)) & (~diag_mask)
+            similarity_matrix = similarity_matrix.masked_fill(i_mask, -1e9)
+            
+        # 2. 如果 batch 内有相同的 user_id，则对 item->user 的 Softmax 来说这些 user 不该是负样本
+        if user_ids is not None:
+            u_mask = (user_ids.unsqueeze(0) == user_ids.unsqueeze(1)) & (~diag_mask)
+            # 因为 similarity_matrix 的行是 user，列是 item
+            # item->user 是 similarity_matrix.t()
+            # 为了方便，我们可以直接把 u_mask 作用于 similarity_matrix 的转置对应的位置
+            similarity_matrix = similarity_matrix.masked_fill(u_mask, -1e9)
 
         # 计算交叉熵损失
         loss_ui = F.cross_entropy(similarity_matrix, labels)
@@ -287,7 +306,8 @@ class TwoTowerTrainer:
 
         # 计算损失
         item_ids = inputs.get('item_id')
-        loss = self.contrastive_loss(user_vectors, item_vectors, item_ids)
+        user_ids = inputs.get('user_id')
+        loss = self.contrastive_loss(user_vectors, item_vectors, item_ids, user_ids)
 
         loss.backward()
         # 放大裁剪阈值 1.0 -> 5.0，给模型更多“跳出”局部最优的动力
@@ -344,7 +364,8 @@ class TwoTowerTrainer:
                     user_vectors = self.model.user_tower(user_inputs)
                     item_vectors = self.model.item_tower(item_inputs)
                     item_ids = inputs.get('item_id')
-                    loss = self.contrastive_loss(user_vectors, item_vectors, item_ids)
+                    user_ids = inputs.get('user_id')
+                    loss = self.contrastive_loss(user_vectors, item_vectors, item_ids, user_ids)
                     
                     total_val_loss += loss.item()
                     n_val_batches += 1

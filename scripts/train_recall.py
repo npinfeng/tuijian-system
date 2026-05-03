@@ -197,7 +197,7 @@ def main():
     )
     tt_val_loader = torch.utils.data.DataLoader(
         TTDataset(pos_val_log, user_features, video_features_idx),
-        batch_size=tt_batch_size, shuffle=False
+        batch_size=tt_batch_size, shuffle=True  # 验证集也必须打乱，防止局部极度相似导致 InfoNCE 计算偏差
     )
     
     # 从 config.training 读取 patience
