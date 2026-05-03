@@ -41,15 +41,15 @@ recall:
   
   # 双塔模型配置
   two_tower:
-    user_emb_dim: 32
-    item_emb_dim: 32
-    hidden_units: [128, 64]
-    batch_size: 256        # 从1024降到256：InfoNCE下限=ln(256)≈5.5，模型更容易看到提升
-    learning_rate: 0.0005
+    user_emb_dim: 64
+    item_emb_dim: 64
+    hidden_units: [256, 128]
+    batch_size: 256
+    learning_rate: 0.005  # 调大初始学习率，破局
     weight_decay: 1.0e-5
     temperature: 0.1
     epochs: 30
-    dropout: 0.3
+    dropout: 0.2
   
   # MIND多兴趣配置
   mind:

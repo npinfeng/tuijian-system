@@ -188,8 +188,11 @@ def main():
 
     # 正样本：训练集点击 & 验证集点击
     pos_val_log = val_log[val_log['is_click'] == 1].copy()
+    # 随机采样训练集，避免只训练最老的数据
+    train_data = pos_train_log.sample(n=min(len(pos_train_log), tt_train_rows), random_state=42)
+    
     tt_train_loader = torch.utils.data.DataLoader(
-        TTDataset(pos_train_log.head(tt_train_rows), user_features, video_features_idx),
+        TTDataset(train_data, user_features, video_features_idx),
         batch_size=tt_batch_size, shuffle=True
     )
     tt_val_loader = torch.utils.data.DataLoader(
