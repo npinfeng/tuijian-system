@@ -28,7 +28,9 @@ from src.data.kuairand_loader import (
     load_user_features,
     load_video_features,
     NUM_USERS,
-    NUM_VIDEOS
+    NUM_VIDEOS,
+    NUM_ACTIVE_DEGREES,
+    NUM_VIDEO_TYPES
 )
 
 from src.recall import (
@@ -111,48 +113,99 @@ def main():
     tt_emb_dim     = tt_cfg.get('user_emb_dim', 64)
     tt_train_rows  = tt_cfg.get('max_train_rows', 200000)
 
-    user_cols = [{'name': 'user_id', 'type': 'categorical', 'vocab_size': NUM_USERS}]
-    item_cols = [{'name': 'item_id', 'type': 'categorical', 'vocab_size': NUM_VIDEOS}]
+    # 增强特征配置
+    user_cols = [
+        {'name': 'user_id',          'type': 'categorical', 'vocab_size': NUM_USERS},
+        {'name': 'active_degree',    'type': 'categorical', 'vocab_size': NUM_ACTIVE_DEGREES},
+        {'name': 'is_live_streamer', 'type': 'numerical'},
+        {'name': 'is_video_author',  'type': 'numerical'},
+    ]
+    item_cols = [
+        {'name': 'item_id',       'type': 'categorical', 'vocab_size': NUM_VIDEOS},
+        {'name': 'video_type_id', 'type': 'categorical', 'vocab_size': NUM_VIDEO_TYPES},
+        {'name': 'tag',           'type': 'categorical', 'vocab_size': 5000}, # 假设标签量级
+        {'name': 'duration_s',    'type': 'numerical'},
+    ]
 
     tt_model = TwoTowerModel(
         user_feature_columns=user_cols,
         item_feature_columns=item_cols,
         embedding_dim=tt_emb_dim,
-        user_hidden_units=tt_cfg.get('hidden_units', [128, 64]),
-        item_hidden_units=tt_cfg.get('hidden_units', [128, 64]),
+        user_hidden_units=tt_cfg.get('hidden_units', [256, 128]),
+        item_hidden_units=tt_cfg.get('hidden_units', [256, 128]),
         dropout_rate=tt_cfg.get('dropout', 0.2)
     )
     tt_trainer = TwoTowerTrainer(tt_model, config={
         'learning_rate': tt_lr,
-        'temperature': tt_cfg.get('temperature', 0.1),
         'weight_decay': tt_cfg.get('weight_decay', 1e-5),
     })
 
-    # 准备 DataLoader
+    # 准备增强版 DataLoader
     class TTDataset(torch.utils.data.Dataset):
-        def __init__(self, df):
-            self.u = df['user_id'].values
-            self.i = df['item_id'].values
-        def __len__(self): return len(self.u)
+        def __init__(self, df, user_features, video_features):
+            # 合并特征
+            self.data = df[['user_id', 'item_id']].copy()
+            # 这里的 item_id 对应视频特征里的 video_id (index)
+            self.u_feat = user_features
+            self.v_feat = video_features
+            
+        def __len__(self): return len(self.data)
+        
         def __getitem__(self, idx):
-            return {'user_id': torch.tensor(self.u[idx], dtype=torch.long),
-                    'item_id': torch.tensor(self.i[idx], dtype=torch.long)}
+            row = self.data.iloc[idx]
+            uid = row['user_id']
+            iid = row['item_id']
+            
+            res = {}
+            # 用户端特征
+            u_info = self.u_feat.loc[uid]
+            res['user_id'] = torch.tensor(uid, dtype=torch.long)
+            res['active_degree'] = torch.tensor(u_info['active_degree'], dtype=torch.long)
+            res['is_live_streamer'] = torch.tensor(u_info['is_live_streamer'], dtype=torch.float32)
+            res['is_video_author'] = torch.tensor(u_info['is_video_author'], dtype=torch.float32)
+            
+            # 物品端特征
+            try:
+                v_info = self.v_feat.loc[iid]
+                res['item_id'] = torch.tensor(iid, dtype=torch.long)
+                res['video_type_id'] = torch.tensor(v_info['video_type_id'], dtype=torch.long)
+                res['tag'] = torch.tensor(v_info['tag'], dtype=torch.long)
+                res['duration_s'] = torch.tensor(v_info['duration_s'], dtype=torch.float32)
+            except KeyError:
+                # 缺失补 0
+                res['item_id'] = torch.tensor(iid, dtype=torch.long)
+                res['video_type_id'] = torch.tensor(2, dtype=torch.long)
+                res['tag'] = torch.tensor(0, dtype=torch.long)
+                res['duration_s'] = torch.tensor(0.0, dtype=torch.float32)
+                
+            return res
+
+    # 准备特征数据供 Dataset 使用 (确保 video_features 以 video_id 为索引)
+    if 'video_id' in video_features.columns:
+        video_features_idx = video_features.set_index('video_id')
+    else:
+        video_features_idx = video_features
 
     # 正样本：训练集点击 & 验证集点击
     pos_val_log = val_log[val_log['is_click'] == 1].copy()
     tt_train_loader = torch.utils.data.DataLoader(
-        TTDataset(pos_train_log.head(tt_train_rows)),
+        TTDataset(pos_train_log.head(tt_train_rows), user_features, video_features_idx),
         batch_size=tt_batch_size, shuffle=True
     )
     tt_val_loader = torch.utils.data.DataLoader(
-        TTDataset(pos_val_log),
+        TTDataset(pos_val_log, user_features, video_features_idx),
         batch_size=tt_batch_size, shuffle=False
     )
+    
+    # 从 config.training 读取 patience
+    train_patience = config.get('training', {}).get('early_stopping_patience', 5)
+    
     print(f"双塔训练集: {min(len(pos_train_log), tt_train_rows):,} 条  "
-          f"验证集: {len(pos_val_log):,} 条  epochs={tt_epochs}")
+          f"验证集: {len(pos_val_log):,} 条  epochs={tt_epochs} patience={train_patience}")
+    
     tt_trainer.train(tt_train_loader, tt_val_loader, epochs=tt_epochs,
                      save_path='models/two_tower_kuairand',
-                     patience=tt_cfg.get('patience', 3))
+                     patience=train_patience)
     
     print("\n" + "=" * 60)
     print("所有路召回模型训练完成！")

@@ -44,7 +44,7 @@ recall:
     user_emb_dim: 32
     item_emb_dim: 32
     hidden_units: [128, 64]
-    batch_size: 1024
+    batch_size: 256        # 从1024降到256：InfoNCE下限=ln(256)≈5.5，模型更容易看到提升
     learning_rate: 0.0005
     weight_decay: 1.0e-5
     temperature: 0.1
@@ -268,7 +268,7 @@ training:
   mixed_precision: true
   gradient_accumulation_steps: 2
   max_grad_norm: 1.0
-  early_stopping_patience: 3
+  early_stopping_patience: 7   # 从3增到7，给模型更多时间收敛
   checkpoint_frequency: 1000
 
 # 评估配置

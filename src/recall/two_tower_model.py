@@ -198,16 +198,16 @@ class TwoTowerTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
 
-        # 优化器 (加入 L2 正则化防止过拟合)
+        # 温度系数：可学习参数，初始化为 log(1/0.07)（CLIP 论文标准做法）
+        # 使用 exp() 确保温度始终为正，模型自动找到最优温度，避免手动调参
+        self.log_temperature = nn.Parameter(torch.ones([]) * np.log(1.0 / 0.07))
+
+        # 优化器 (加入 L2 正则化防止过拟合，同时优化温度参数)
         self.optimizer = torch.optim.Adam(
-            model.parameters(),
+            list(model.parameters()) + [self.log_temperature],
             lr=config.get('learning_rate', 0.001),
             weight_decay=config.get('weight_decay', 1e-5)
         )
-
-        # 温度系数：控制 softmax 的锐度
-        # 过小会导致梯度爆炸，模型卡在 ln(batch_size)；推荐 0.07~0.2
-        self.temperature = config.get('temperature', 0.1)
 
     def contrastive_loss(self,
                          user_vectors: torch.Tensor,
@@ -216,19 +216,25 @@ class TwoTowerTrainer:
         对比学习损失 (InfoNCE Loss)
         正样本：batch内的user-item配对
         负样本：batch内其他所有item
+        温度使用可学习参数 log_temperature.exp()，自动优化
         """
         # 计算所有user-item对的相似度矩阵
         # user_vectors: (batch_size, emb_dim)
         # item_vectors: (batch_size, emb_dim)
         similarity_matrix = torch.mm(user_vectors, item_vectors.t())  # (batch, batch)
-        similarity_matrix = similarity_matrix / self.temperature
+
+        # 使用可学习温度：exp(log_T) 保证温度恒正，并限制范围防止梯度爆炸
+        temperature = self.log_temperature.exp().clamp(min=0.01, max=100.0)
+        similarity_matrix = similarity_matrix * temperature
 
         # 对角线是正样本
         batch_size = user_vectors.size(0)
         labels = torch.arange(batch_size, device=user_vectors.device)
 
-        # 计算交叉熵损失
-        loss = F.cross_entropy(similarity_matrix, labels)
+        # 计算交叉熵损失（user→item 和 item→user 双向对称，提升稳定性）
+        loss_ui = F.cross_entropy(similarity_matrix, labels)
+        loss_iu = F.cross_entropy(similarity_matrix.t(), labels)
+        loss = (loss_ui + loss_iu) / 2.0
 
         return loss
 
@@ -315,7 +321,8 @@ class TwoTowerTrainer:
             train_loss = total_train_loss / max(n_train_batches, 1)
             val_loss = total_val_loss / max(n_val_batches, 1)
 
-            print(f"\nTrain Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            current_temp = self.log_temperature.exp().item()
+            print(f"\nTrain Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Temperature: {current_temp:.4f}")
 
             # 保存最佳模型并检查早停
             if val_loss < best_val_loss:

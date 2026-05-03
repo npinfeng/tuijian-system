@@ -21,7 +21,7 @@ sys.path.insert(0, str(project_root))
 
 from src.utils.common import load_config
 from src.recall import ItemCF, UserCF, HotRecall, NewItemRecall, FollowRecall, DeepWalkRecall, DeepWalkModel
-from src.recall.two_tower_model import TwoTowerModel
+from src.recall.two_tower_model import TwoTowerModel, TwoTowerRecall
 from src.ranking.din_model import DIN
 from src.rerank.diversity_rerank import DiversityReranker
 from src.data.kuairand_loader import (
@@ -94,6 +94,40 @@ class RecommendationService:
                 print("  ✓ deepwalk 加载成功")
             except: pass
 
+        # 4. 加载双塔召回模型
+        print("加载双塔召回模型...")
+        tt_path = 'models/two_tower_kuairand_best.pt'
+        if os.path.exists(tt_path):
+            try:
+                from src.data.kuairand_loader import NUM_USERS, NUM_VIDEOS, NUM_ACTIVE_DEGREES, NUM_VIDEO_TYPES
+                # 特征列需与训练时保持严格一致
+                user_cols = [
+                    {'name': 'user_id',          'type': 'categorical', 'vocab_size': NUM_USERS},
+                    {'name': 'active_degree',    'type': 'categorical', 'vocab_size': NUM_ACTIVE_DEGREES},
+                    {'name': 'is_live_streamer', 'type': 'numerical'},
+                    {'name': 'is_video_author',  'type': 'numerical'},
+                ]
+                item_cols = [
+                    {'name': 'item_id',       'type': 'categorical', 'vocab_size': NUM_VIDEOS},
+                    {'name': 'video_type_id', 'type': 'categorical', 'vocab_size': NUM_VIDEO_TYPES},
+                    {'name': 'tag',           'type': 'categorical', 'vocab_size': 5000},
+                    {'name': 'duration_s',    'type': 'numerical'},
+                ]
+                tt_cfg = self.config.get('recall', {}).get('two_tower', {})
+                tt_model = TwoTowerModel(
+                    user_feature_columns=user_cols,
+                    item_feature_columns=item_cols,
+                    embedding_dim=tt_cfg.get('user_emb_dim', 64),
+                    user_hidden_units=tt_cfg.get('hidden_units', [256, 128]),
+                    item_hidden_units=tt_cfg.get('hidden_units', [256, 128]),
+                )
+                tt_model.load_state_dict(torch.load(tt_path, map_location=self.device))
+                # 注意：self.item_features 已经 rename 过，包含 item_id, tag, duration_s, video_type_id
+                self.recall_models['two_tower'] = TwoTowerRecall(tt_model, self.item_features)
+                print("  ✓ two_tower 加载成功")
+            except Exception as e:
+                print(f"  ✗ two_tower 加载失败: {e}")
+
         # 3. 加载 DIN 精排模型
         print("加载精排模型...")
         din_path = 'models/din_kuairand_best.pt'
@@ -128,9 +162,14 @@ class RecommendationService:
             top_k = ch.get('top_k', 50)
             if name in self.recall_models:
                 try:
-                    recs = self.recall_models[name].recommend(user_id, n=top_k)
+                    if name == 'two_tower':
+                        u_feat = self.user_features.loc[user_id] if user_id in self.user_features.index else None
+                        recs = self.recall_models[name].recommend(user_id, n=top_k, user_features=u_feat)
+                    else:
+                        recs = self.recall_models[name].recommend(user_id, n=top_k)
                     all_candidates.update([item[0] for item in recs])
-                except:
+                except Exception as e:
+                    print(f"召回异常 [{name}]: {e}")
                     continue
         
         # 兜底：如果没召回够，加点热门
