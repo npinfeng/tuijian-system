@@ -36,9 +36,9 @@ class FMLayer(nn.Module):
         for feat_col in self.feature_columns:
             name = feat_col['name']
             if feat_col['type'] == 'categorical':
-                linear_logit += self.linear_layers[name](inputs[name]).squeeze(-1)
+                linear_logit = linear_logit + self.linear_layers[name](inputs[name]).squeeze(-1)
             else:
-                linear_logit += self.linear_layers[name](inputs[name].unsqueeze(-1)).squeeze(-1)
+                linear_logit = linear_logit + self.linear_layers[name](inputs[name].unsqueeze(-1)).squeeze(-1)
         
         # 2. 二阶部分 (FM Cross)
         # 拼接所有 categorical embedding: (batch, num_fields, emb_dim)
