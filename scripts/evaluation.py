@@ -151,11 +151,29 @@ def main():
     if os.path.exists(tt_path):
         try:
             from src.recall.two_tower_model import TwoTowerModel, TwoTowerRecall
-            (u_cols, i_cols, _, _) = get_kuairand_feature_columns()
+            from src.data.kuairand_loader import NUM_USERS, NUM_ACTIVE_DEGREES, NUM_VIDEOS, NUM_VIDEO_TYPES
+            
+            tt_cfg = config.get('recall', {}).get('two_tower', {})
+            user_cols = [
+                {'name': 'user_id',          'type': 'categorical', 'vocab_size': NUM_USERS},
+                {'name': 'active_degree',    'type': 'categorical', 'vocab_size': NUM_ACTIVE_DEGREES},
+                {'name': 'is_live_streamer', 'type': 'numerical'},
+                {'name': 'is_video_author',  'type': 'numerical'},
+            ]
+            item_cols = [
+                {'name': 'item_id',       'type': 'categorical', 'vocab_size': NUM_VIDEOS},
+                {'name': 'video_type_id', 'type': 'categorical', 'vocab_size': NUM_VIDEO_TYPES},
+                {'name': 'tag',           'type': 'categorical', 'vocab_size': 5000},
+                {'name': 'duration_s',    'type': 'numerical'},
+            ]
+
             tt_model = TwoTowerModel(
-                user_feature_columns=u_cols,
-                item_feature_columns=i_cols,
-                embedding_dim=config['recall']['two_tower'].get('user_emb_dim', 64)
+                user_feature_columns=user_cols,
+                item_feature_columns=item_cols,
+                embedding_dim=tt_cfg.get('user_emb_dim', 64),
+                user_hidden_units=tt_cfg.get('hidden_units', [256, 128]),
+                item_hidden_units=tt_cfg.get('hidden_units', [256, 128]),
+                dropout_rate=tt_cfg.get('dropout', 0.2)
             )
             tt_model.load_state_dict(torch.load(tt_path, map_location=device))
             model = TwoTowerRecall(tt_model, video_features)
