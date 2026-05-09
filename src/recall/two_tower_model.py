@@ -1,7 +1,3 @@
-"""
-双塔模型实现 (Two Tower Model) - PyTorch 版
-用于召回阶段，支持高效的向量检索
-"""
 
 import torch
 import torch.nn as nn
