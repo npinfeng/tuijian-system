@@ -115,16 +115,32 @@ class FeatureEngineer:
         # 3. 标签列
         df['label'] = df[label_col].fillna(0).astype(int)
         
-        # 4. 构建用户历史行为序列 (以发生交互的时间点截取历史)
-        clicked = df[df['is_click'] == 1].sort_values(['user_id', 'time_ms' if 'time_ms' in df.columns else 'timestamp'])
-        user_hist = clicked.groupby('user_id')['item_id'].apply(list).to_dict()
+        # 4. 严格防穿越 (Point-in-Time Join)：构建用户历史行为序列
+        # 确保数据按时间排序，保障序列的时序正确性
+        time_col = 'time_ms' if 'time_ms' in df.columns else 'timestamp'
+        df = df.sort_values(['user_id', time_col]).reset_index(drop=True)
         
-        # 为了避免数据穿越，简化版先取用户所有的历史，然后在 Dataset __init__ 里进行 padding
-        # 严格防穿越应该做 mask 取当前 time 之前的 sequence
-        def get_seq(user_id):
-            return user_hist.get(user_id, [])[-max_seq_len:]
+        user_ids = df['user_id'].values
+        item_ids = df['item_id'].values
+        is_clicks = df['is_click'].values
+        
+        hist_seqs = []
+        user_history = {}
+        
+        # O(N) 遍历一遍，确保只有当前时刻之前发生的点击，才会被计入当前序列
+        for uid, iid, click in zip(user_ids, item_ids, is_clicks):
+            hist = user_history.get(uid, [])
+            # 截取最近的 max_seq_len 作为该条样本的历史序列
+            # 注意：列表切片创建的是新对象，避免引用污染
+            hist_seqs.append(hist[-max_seq_len:])
             
-        df['hist_item_seq'] = df['user_id'].map(get_seq)
+            # 当前记录如果是点击，将其加入历史，供该用户之后的样本使用
+            if click == 1:
+                if uid not in user_history:
+                    user_history[uid] = []
+                user_history[uid].append(iid)
+                
+        df['hist_item_seq'] = hist_seqs
         df['seq_length'] = df['hist_item_seq'].apply(len)
         
         df = df.fillna(0) # 兜底
